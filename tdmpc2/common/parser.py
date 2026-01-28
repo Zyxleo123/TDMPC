@@ -40,6 +40,7 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
         / "logs"
         / cfg.task
         / str(cfg.seed)
+        / cfg.wandb_project
         / cfg.exp_name
     )
     cfg.task_title = cfg.task.replace("-", " ").title()

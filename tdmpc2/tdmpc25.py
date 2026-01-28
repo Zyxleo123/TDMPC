@@ -97,7 +97,7 @@ class TDMPC2:
 		self.model.load_state_dict(state_dict["model"])
 
 	@torch.no_grad()
-	def act(self, obs, t0=False, eval_mode=False, task=None, use_pi=False):
+	def act(self, obs, t0=False, eval_mode=False, task=None, use_pi=False, return_plan=False):
 		"""
 		Select an action by planning in the latent space of the world model.
 
@@ -115,7 +115,10 @@ class TDMPC2:
 			task = torch.tensor([task], device=self.device)
 		z = self.model.encode(obs, task)
 		if self.cfg.mpc and not use_pi:
-			a, mu, std = self.plan(z, t0=t0, eval_mode=eval_mode, task=task)
+			if return_plan:
+				a, mu, std, plan_info = self.plan(z, t0=t0, eval_mode=eval_mode, task=task, return_plan=True)
+			else:
+				a, mu, std = self.plan(z, t0=t0, eval_mode=eval_mode, task=task)
 		else:
 			mu, pi, log_pi, log_std = self.model.pi(z, task)
 			if eval_mode:
@@ -123,6 +126,10 @@ class TDMPC2:
 			else:
 				a = pi[0]
 			mu, std = mu[0], log_std.exp()[0]
+			plan_info = None
+
+		if return_plan:
+			return a.cpu(), mu.cpu(), std.cpu(), plan_info
 
 		if eval_mode:
 			return a.cpu()
@@ -130,21 +137,27 @@ class TDMPC2:
 			return a.cpu(), mu.cpu(), std.cpu()
 
 	@torch.no_grad()
-	def _estimate_value(self, z, actions, task, horizon, eval_mode=False):
+	def _estimate_value(self, z, actions, task, horizon, eval_mode=False, return_details=False):
 		"""Estimate value of a trajectory starting at latent state z and executing given actions."""
 		G, discount = 0, 1
+		rewards = []
 		for t in range(horizon):
 			reward = math.two_hot_inv(self.model.reward(z, actions[t], task), self.cfg)
 			z = self.model.next(z, actions[t], task)
+			if return_details:
+				rewards.append(reward)
 			G += discount * reward
 			discount *= (
 				self.discount[torch.tensor(task)]
 				if self.cfg.multitask
 				else self.discount
 			)
-		return G + discount * self.model.Q(
+		q = self.model.Q(
 			z, self.model.pi(z, task)[1], task, return_type="avg"
 		)
+		if return_details:
+			return G + discount * q, torch.stack(rewards), q
+		return G + discount * q
 
 	@torch.no_grad()
 	def _estimate_value_parallel(self, z, actions, task):
@@ -159,7 +172,7 @@ class TDMPC2:
 		return G + discount * self.model.Q(z, self.model.pi(z, task)[1], task, return_type='avg')
 
 	@torch.no_grad()
-	def plan(self, z, t0=False, eval_mode=False, task=None):
+	def plan(self, z, t0=False, eval_mode=False, task=None, return_plan=False):
 		"""
 		Plan a sequence of actions using the learned world model.
 
@@ -186,6 +199,8 @@ class TDMPC2:
 				pi_actions[t] = self.model.pi(_z, task)[1]
 				_z = self.model.next(_z, pi_actions[t], task)
 			pi_actions[-1] = self.model.pi(_z, task)[1]
+		else:
+			pi_actions = None
 
 		# Initialize state and parameters
 		z = z.repeat(self.cfg.num_samples, 1)
@@ -205,6 +220,7 @@ class TDMPC2:
 			actions[:, : num_pi_trajs] = pi_actions
 
 		# Iterate MPPI
+		plan_metrics = []
 		for _ in range(self.cfg.iterations):
 			# Sample actions
 			actions[:, num_pi_trajs :] = (
@@ -221,7 +237,11 @@ class TDMPC2:
 				actions = actions * self.model._action_masks[task]
 
 			# Compute elite actions
-			value = self._estimate_value(z, actions, task, self.cfg.horizon).nan_to_num_(0)
+			if return_plan:
+				value, rewards, q_values = self._estimate_value(z, actions, task, self.cfg.horizon, return_details=True)
+			else:
+				value = self._estimate_value(z, actions, task, self.cfg.horizon)
+
 			elite_idxs = torch.topk(
 				value.squeeze(1), self.cfg.num_elites, dim=0
 			).indices
@@ -231,6 +251,21 @@ class TDMPC2:
 			max_value = elite_value.max(0)[0]
 			score = torch.exp(self.cfg.temperature * (elite_value - max_value))
 			score /= score.sum(0)
+
+			if return_plan:
+				plan_metrics.append({
+					"mean": mean.cpu(),
+					"std": std.cpu(),
+					"values": value.cpu(),
+					"elite_idxs": elite_idxs.cpu(),
+					"elite_values": elite_value.cpu(),
+					"elite_actions": elite_actions.cpu(),
+					"score": score.cpu(),
+					"actions": actions.cpu(),
+					"rewards": rewards.cpu(),
+					"q_values": q_values.cpu(),
+				})
+
 			mean = torch.sum(score.unsqueeze(0) * elite_actions, dim=1) / (
 				score.sum(0) + 1e-9
 			)
@@ -253,6 +288,8 @@ class TDMPC2:
 			a = mu + std * torch.randn(self.cfg.action_dim, device=std.device)
 		else:
 			a = mu
+		if return_plan:
+			return a.clamp_(-1, 1), mu, std, plan_metrics
 		return a.clamp_(-1, 1), mu, std
 	
 	# @torch.no_grad()

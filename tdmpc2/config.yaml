@@ -43,7 +43,7 @@ dyna_coef: 0.0 # 0.05
 exp_name: default
 record_q_scale: true # record curve of action value scale
 record_pi_q_scale: false # record curve of policy action value scale
-use_pi_prob: 1.0 # use policy probability to calculate action value
+use_pi_prob: 0.0 # use policy probability to calculate action value
 
 # planning
 planner_mode: "default" # ["default", "loop"]
@@ -96,6 +96,7 @@ wandb_silent: false
 disable_wandb: true
 save_csv: true
 save_freq: 1000000
+save_trajectories: true
 
 # misc
 save_video: true

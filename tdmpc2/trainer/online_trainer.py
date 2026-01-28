@@ -1,4 +1,5 @@
 from time import time
+import os
 
 import math
 import numpy as np
@@ -79,16 +80,39 @@ class OnlineTrainer(Trainer):
         ep_rewards, ep_successes = [], []
         for i in range(self.cfg.eval_episodes):
             obs, done, ep_reward, t = self.env.reset()[0], False, 0, 0
+            
+            save_traj = self.cfg.save_trajectories
+            traj_plans = []
+
             if self.cfg.save_video:
                 self.logger.video.init(self.env, enabled=(i == 0))
             while not done:
-                action = self.agent.act(obs, t0=t == 0, eval_mode=True) # TODO: set use pi=False
+                if save_traj:
+                    action, _, _, plan_info = self.agent.act(obs, t0=t == 0, eval_mode=True, return_plan=True)
+                else:
+                    action = self.agent.act(obs, t0=t == 0, eval_mode=True) # TODO: set use pi=False
+                
                 obs, reward, done, truncated, info = self.env.step(action)
+                
+                if save_traj:
+                    traj_plans.append({"plan": plan_info, "reward": reward})
+
                 done = done or truncated
                 ep_reward += reward
                 t += 1
                 if self.cfg.save_video:
                     self.logger.video.record(self.env)
+            
+            if save_traj:
+                save_dir = os.path.join(self.cfg.work_dir, "eval_trajectories")
+                os.makedirs(save_dir, exist_ok=True)
+                
+                save_data = {"traj_plans": traj_plans}
+                if self.cfg.save_video:
+                    save_data["frames"] = np.stack(self.logger.video.frames)
+                
+                torch.save(save_data, os.path.join(save_dir, f'plans_step_{self._step}_ep_{i}.pt'))
+
             ep_rewards.append(ep_reward)
             ep_successes.append(info["success"])
             if self.cfg.save_video:
@@ -143,7 +167,6 @@ class OnlineTrainer(Trainer):
                 # q_value = self.agent.model.Q(self.agent.model.encode(obs.to(self.agent.device), task), 
                 #                             action.to(self.agent.device), 
                 #                             task, return_type="avg")
-            import pudb; pudb.set_trace()
             if self.cfg.obs == "rgb":
                 q_value = self.agent.model.Q(self.agent.model.encode(obs.unsqueeze(0).to(self.agent.device), task).squeeze(0), 
                                             action.to(self.agent.device), 
