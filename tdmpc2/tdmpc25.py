@@ -97,6 +97,32 @@ class TDMPC2:
 		self.model.load_state_dict(state_dict["model"])
 
 	@torch.no_grad()
+	def predict_reward(self, obs, action, task=None):
+		"""
+		Predict reward for a given observation and action.
+		"""
+		obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
+		if task is not None:
+			task = torch.tensor([task], device=self.device)
+		z = self.model.encode(obs, task)
+		
+		# Ensure action is a tensor on the correct device
+		if not isinstance(action, torch.Tensor):
+			action = torch.tensor(action, device=self.device)
+		else:
+			action = action.to(self.device)
+			
+		if action.ndim == 1:
+			action = action.unsqueeze(0)
+
+		if self.cfg.num_bins > 1:
+			reward = math.two_hot_inv(self.model.reward(z, action, task), self.cfg)
+		else:
+			reward = self.model.reward(z, action, task)
+		
+		return reward.item()
+
+	@torch.no_grad()
 	def act(self, obs, t0=False, eval_mode=False, task=None, use_pi=False, return_plan=False):
 		"""
 		Select an action by planning in the latent space of the world model.
@@ -142,7 +168,10 @@ class TDMPC2:
 		G, discount = 0, 1
 		rewards = []
 		for t in range(horizon):
-			reward = math.two_hot_inv(self.model.reward(z, actions[t], task), self.cfg)
+			if self.cfg.num_bins > 1:
+				reward = math.two_hot_inv(self.model.reward(z, actions[t], task), self.cfg)
+			else:
+				reward = self.model.reward(z, actions[t], task)
 			z = self.model.next(z, actions[t], task)
 			if return_details:
 				rewards.append(reward)
@@ -164,7 +193,10 @@ class TDMPC2:
 		"""Estimate value of a trajectory starting at latent state z and executing given actions."""
 		G, discount = 0, 1
 		for t in range(self.cfg.horizon):
-			reward = math.two_hot_inv(self.model.reward(z, actions[:, t], task), self.cfg)
+			if self.cfg.num_bins > 1:
+				reward = math.two_hot_inv(self.model.reward(z, actions[:, t], task), self.cfg)
+			else:
+				reward = self.model.reward(z, actions[:, t], task)
 			z = self.model.next(z, actions[:, t], task)
 			G = G + discount * reward
 			discount_update = self.discount[torch.tensor(task)] if self.cfg.multitask else self.discount
@@ -719,7 +751,10 @@ class TDMPC2:
 					# Sample model predi	
 					_a_sim = self.model.pi(_zs_sim[t], task)[1]
 					_as_sim[t] = _a_sim
-					_rs_sim[t] = math.two_hot_inv(self.model.reward(_zs_sim[t], _a_sim, task), self.cfg)
+					if self.cfg.num_bins > 1:
+						_rs_sim[t] = math.two_hot_inv(self.model.reward(_zs_sim[t], _a_sim, task), self.cfg)
+					else:
+						_rs_sim[t] = self.model.reward(_zs_sim[t], _a_sim, task)
 					#print(torch.norm(_rs_sim, p=2))
 					_zs_sim[t + 1] = self.model.next(_zs_sim[t], _a_sim, task)
 					#_td_targets_sim = _td_targets_sim + _rs_sim[t] * (self.discount[torch.tensor(task)] if self.cfg.multitask else self.discount)**t
@@ -739,10 +774,16 @@ class TDMPC2:
 			_dyna_qs = self.model.Q(_zs_sim[:-1], _as_sim, task, return_type="all")
 			for t in range(self.cfg.horizon):
 				for q in range(self.cfg.num_q):
-					dyna_q_loss += (
-						math.soft_ce(_dyna_qs[q][t], _td_targets_sim[t], self.cfg).mean()
-						* self.cfg.rho**t
-					)
+					if self.cfg.num_bins > 1:
+						dyna_q_loss += (
+							math.soft_ce(_dyna_qs[q][t], _td_targets_sim[t], self.cfg).mean()
+							* self.cfg.rho**t
+						)
+					else:
+						dyna_q_loss += (
+							F.mse_loss(_dyna_qs[q][t].squeeze(-1), _td_targets_sim[t])
+							* self.cfg.rho**t
+						)
 			dyna_q_loss /= (self.cfg.horizon * self.cfg.num_q)
 			
 		# elif self.cfg.dyna:
@@ -757,15 +798,27 @@ class TDMPC2:
 		# Compute losses
 		reward_loss, value_loss = 0, 0
 		for t in range(self.cfg.horizon):
-			reward_loss += (
-				math.soft_ce(reward_preds[t], reward[t], self.cfg).mean()
-				* self.cfg.rho**t
-			)
-			for q in range(self.cfg.num_q):
-				value_loss += (
-					math.soft_ce(qs[q][t], td_targets[t], self.cfg).mean()
+			if self.cfg.num_bins > 1:
+				reward_loss += (
+					math.soft_ce(reward_preds[t], reward[t], self.cfg).mean()
 					* self.cfg.rho**t
 				)
+				for q in range(self.cfg.num_q):
+					value_loss += (
+						math.soft_ce(qs[q][t], td_targets[t], self.cfg).mean()
+						* self.cfg.rho**t
+					)
+			else:
+				reward_loss += (
+					F.mse_loss(reward_preds[t].squeeze(-1), reward[t])
+					* self.cfg.rho**t
+				)
+				for q in range(self.cfg.num_q):
+					value_loss += (
+						F.mse_loss(qs[q][t].squeeze(-1), td_targets[t])
+						* self.cfg.rho**t
+					)
+
 		consistency_loss *= 1 / self.cfg.horizon
 		reward_loss *= 1 / self.cfg.horizon
 		value_loss *= 1 / (self.cfg.horizon * self.cfg.num_q)

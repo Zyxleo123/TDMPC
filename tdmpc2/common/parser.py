@@ -46,7 +46,7 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
     cfg.task_title = cfg.task.replace("-", " ").title()
     cfg.bin_size = (cfg.vmax - cfg.vmin) / (
         cfg.num_bins - 1
-    )  # Bin size for discrete regression
+    )  if cfg.num_bins > 1 else None # Bin size for discrete regression
 
     # Model size
     if cfg.get("model_size", None) is not None:

@@ -78,8 +78,10 @@ class OnlineTrainer(Trainer):
     def eval(self):
         """Evaluate a TD-MPC2 agent."""
         ep_rewards, ep_successes = [], []
+        ep_rewards_pred = []
         for i in range(self.cfg.eval_episodes):
             obs, done, ep_reward, t = self.env.reset()[0], False, 0, 0
+            ep_pred_reward = 0
             
             save_traj = self.cfg.save_trajectories
             traj_plans = []
@@ -92,6 +94,7 @@ class OnlineTrainer(Trainer):
                 else:
                     action = self.agent.act(obs, t0=t == 0, eval_mode=True) # TODO: set use pi=False
                 
+                ep_pred_reward += self.agent.predict_reward(obs, action)
                 obs, reward, done, truncated, info = self.env.step(action)
                 
                 if save_traj:
@@ -114,6 +117,7 @@ class OnlineTrainer(Trainer):
                 torch.save(save_data, os.path.join(save_dir, f'plans_step_{self._step}_ep_{i}.pt'))
 
             ep_rewards.append(ep_reward)
+            ep_rewards_pred.append(ep_pred_reward)
             ep_successes.append(info["success"])
             if self.cfg.save_video:
                 # self.logger.video.save(self._step)
@@ -135,6 +139,7 @@ class OnlineTrainer(Trainer):
             
         return dict(
             episode_reward=np.nanmean(ep_rewards),
+            episode_reward_pred=np.nanmean(ep_rewards_pred),
             episode_success=np.nanmean(ep_successes),
             episode_reward_pi=np.nanmean(ep_rewards_pi) if self.cfg.eval_pi else np.nan,
             episode_success_pi=np.nanmean(ep_successes_pi) if self.cfg.eval_pi else np.nan,

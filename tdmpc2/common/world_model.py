@@ -221,14 +221,18 @@ class WorldModel(nn.Module):
             return out
 
         Q1, Q2 = out[np.random.choice(self.cfg.num_q, 2, replace=False)]
-        Q1, Q2 = math.two_hot_inv(Q1, self.cfg), math.two_hot_inv(Q2, self.cfg)
+        if self.cfg.num_bins > 1:
+            Q1, Q2 = math.two_hot_inv(Q1, self.cfg), math.two_hot_inv(Q2, self.cfg)
 
         if return_type == "min":
             return torch.min(Q1, Q2)
         elif return_type == "avg":
             return (Q1 + Q2) / 2
         elif return_type == "max":
-            qs_thot = [math.two_hot_inv(q, self.cfg) for q in out]
-            qs_thot = torch.stack(qs_thot, dim=0)
-            return torch.max(qs_thot, dim=0)[0]
+            if self.cfg.num_bins > 1:
+                qs_thot = [math.two_hot_inv(q, self.cfg) for q in out]
+                qs_thot = torch.stack(qs_thot, dim=0)
+                return torch.max(qs_thot, dim=0)[0]
+            else:
+                return torch.max(out, dim=0)[0]
         ##return torch.min(Q1, Q2) if return_type == "min" else (Q1 + Q2) / 2
