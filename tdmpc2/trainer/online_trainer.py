@@ -87,18 +87,19 @@ class OnlineTrainer(Trainer):
             traj_plans = []
 
             if self.cfg.save_video:
-                self.logger.video.init(self.env, enabled=(i == 0))
+                self.logger.video.init(self.env, enabled=True)
             while not done:
                 if save_traj:
                     action, _, _, plan_info = self.agent.act(obs, t0=t == 0, eval_mode=True, return_plan=True)
                 else:
                     action = self.agent.act(obs, t0=t == 0, eval_mode=True) # TODO: set use pi=False
                 
-                ep_pred_reward += self.agent.predict_reward(obs, action)
+                pred_reward = self.agent.predict_reward(obs, action)
+                ep_pred_reward += pred_reward
                 obs, reward, done, truncated, info = self.env.step(action)
                 
                 if save_traj:
-                    traj_plans.append({"plan": plan_info, "reward": reward})
+                    traj_plans.append({"plan": plan_info, "reward": reward, "pred_reward": pred_reward})
 
                 done = done or truncated
                 ep_reward += reward

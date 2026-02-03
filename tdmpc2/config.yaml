@@ -15,7 +15,7 @@ distance_cutoff: 0.5
 # evaluation
 checkpoint: ???
 save_dataset: True
-eval_episodes: 1 # TODO: 10
+eval_episodes: 5 # TODO: 10
 eval_pi: True # TODO: False
 eval_value: True # TODO: False
 eval_freq: 2000
