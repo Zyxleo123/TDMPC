@@ -32,6 +32,7 @@ class WorldModel(nn.Module):
             cfg.latent_dim + cfg.action_dim + cfg.task_dim,
             2 * [cfg.mlp_dim],
             max(cfg.num_bins, 1),
+            act=layers.SimNorm(cfg) if cfg.reward_norm else None,
         )
         self._pi = layers.mlp(
             cfg.latent_dim + cfg.task_dim, 2 * [cfg.mlp_dim], 2 * cfg.action_dim
