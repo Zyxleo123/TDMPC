@@ -121,6 +121,29 @@ class TDMPC2:
 			reward = self.model.reward(z, action, task)
 		
 		return reward.item()
+	
+	@torch.no_grad()
+	def predict_value(self, obs, action, task=None):
+		"""
+		Predict value for a given observation and action.
+		"""
+		obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
+		if task is not None:
+			task = torch.tensor([task], device=self.device)
+		z = self.model.encode(obs, task)
+		
+		# Ensure action is a tensor on the correct device
+		if not isinstance(action, torch.Tensor):
+			action = torch.tensor(action, device=self.device)
+		else:
+			action = action.to(self.device)
+			
+		if action.ndim == 1:
+			action = action.unsqueeze(0)
+            
+		q = self.model.Q(z, action, task, return_type="avg")
+		
+		return q.item()
 
 	@torch.no_grad()
 	def act(self, obs, t0=False, eval_mode=False, task=None, use_pi=False, return_plan=False):
@@ -218,6 +241,13 @@ class TDMPC2:
 				torch.Tensor: Action to take in the environment.
 		"""
 		num_pi_trajs = self.cfg.num_pi_trajs
+		
+		# Define effective horizon based on frame skipping
+		if self.cfg.horizon % self.cfg.time_chunk_size != 0:
+			raise ValueError(f"Horizon ({self.cfg.horizon}) must be divisible by time_chunk_size ({self.cfg.time_chunk_size})")
+		time_chunk_size = self.cfg.time_chunk_size
+		H_eff = self.cfg.horizon // time_chunk_size
+
 
 		if num_pi_trajs > 0:
 			pi_actions = torch.empty(
@@ -236,12 +266,17 @@ class TDMPC2:
 
 		# Initialize state and parameters
 		z = z.repeat(self.cfg.num_samples, 1)
-		mean = torch.zeros(self.cfg.horizon, self.cfg.action_dim, device=self.device)
+		mean = torch.zeros(H_eff, self.cfg.action_dim, device=self.device)
 		std = self.cfg.max_std * torch.ones(
-			self.cfg.horizon, self.cfg.action_dim, device=self.device
+			H_eff, self.cfg.action_dim, device=self.device
 		)
 		if not t0:
+			# Shift mean by 1 unit in the compressed space approx., or reset? 
+			# Standard shifting logic applies to raw time steps. 
+			# With skipping, shifting by 1 index means shifting by 'skip' time steps.
+			# For now, simplistic reuse:
 			mean[:-1] = self._prev_mean[1:]
+			
 		actions = torch.empty(
 			self.cfg.horizon,
 			self.cfg.num_samples,
@@ -254,17 +289,24 @@ class TDMPC2:
 		# Iterate MPPI
 		plan_metrics = []
 		for _ in range(self.cfg.iterations):
-			# Sample actions
-			actions[:, num_pi_trajs :] = (
+			# Sample unique actions (effective horizon)
+			actions_eff = (
 				mean.unsqueeze(1)
 				+ std.unsqueeze(1)
 				* torch.randn(
-					self.cfg.horizon,
+					H_eff,
 					self.cfg.num_samples - num_pi_trajs,
 					self.cfg.action_dim,
 					device=std.device,
 				)
 			).clamp(-1, 1)
+			
+			# Expand actions to full horizon by repeating each action 'skip' times
+			actions_expanded = actions_eff.repeat_interleave(time_chunk_size, dim=0)
+
+			# Store in actions buffer
+			actions[:, num_pi_trajs :] = actions_expanded
+
 			if self.cfg.multitask:
 				actions = actions * self.model._action_masks[task]
 
@@ -277,9 +319,13 @@ class TDMPC2:
 			elite_idxs = torch.topk(
 				value.squeeze(1), self.cfg.num_elites, dim=0
 			).indices
-			elite_value, elite_actions = value[elite_idxs], actions[:, elite_idxs]
+			elite_value = value[elite_idxs]
+			
+			# Get elite actions and compress back to effective horizon for update
+			elite_actions_full = actions[:, elite_idxs]
+			elite_actions_eff = elite_actions_full[::time_chunk_size] # Take every k-th action
 
-			# Update parameters
+			# Update parameters using compressed elite actions
 			max_value = elite_value.max(0)[0]
 			score = torch.exp(self.cfg.temperature * (elite_value - max_value))
 			score /= score.sum(0)
@@ -291,19 +337,19 @@ class TDMPC2:
 					"values": value.cpu(),
 					"elite_idxs": elite_idxs.cpu(),
 					"elite_values": elite_value.cpu(),
-					"elite_actions": elite_actions.cpu(),
+					"elite_actions": elite_actions_full.cpu(),
 					"score": score.cpu(),
 					"actions": actions.cpu(),
 					"rewards": rewards.cpu(),
 					"q_values": q_values.cpu(),
 				})
 
-			mean = torch.sum(score.unsqueeze(0) * elite_actions, dim=1) / (
+			mean = torch.sum(score.unsqueeze(0) * elite_actions_eff, dim=1) / (
 				score.sum(0) + 1e-9
 			)
 			std = torch.sqrt(
 				torch.sum(
-					score.unsqueeze(0) * (elite_actions - mean.unsqueeze(1)) ** 2, dim=1
+					score.unsqueeze(0) * (elite_actions_eff - mean.unsqueeze(1)) ** 2, dim=1
 				)
 				/ (score.sum(0) + 1e-9)
 			).clamp_(self.cfg.min_std, self.cfg.max_std)
@@ -313,9 +359,16 @@ class TDMPC2:
 
 		# Select action
 		score = score.squeeze(1).cpu().numpy()
-		actions = elite_actions[:, np.random.choice(np.arange(score.shape[0]), p=score)]
+		# Sample from full horizon elites, then take first action
+		actions_full = elite_actions_full[:, np.random.choice(np.arange(score.shape[0]), p=score)]
+		
+		# Store compressed mean for next iteration
 		self._prev_mean = mean
-		mu, std = actions[0], std[0]
+		
+		# Return first action from the full sequence (which corresponds to first action of first block)
+		mu, std = actions_full[0], std[0] 
+		# Note: std here is from compressed 'std', but roughly applicable for exploration logic
+		
 		if not eval_mode:
 			a = mu + std * torch.randn(self.cfg.action_dim, device=std.device)
 		else:
