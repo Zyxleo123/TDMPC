@@ -79,9 +79,11 @@ class OnlineTrainer(Trainer):
         """Evaluate a TD-MPC2 agent."""
         ep_rewards, ep_successes = [], []
         ep_rewards_pred = []
+        ep_values_pred, ep_values_real = [], []
         for i in range(self.cfg.eval_episodes):
             obs, done, ep_reward, t = self.env.reset()[0], False, 0, 0
             ep_pred_reward = 0
+            ep_vals, ep_real_rewards = [], []
             
             save_traj = self.cfg.save_trajectories
             traj_plans = []
@@ -95,11 +97,14 @@ class OnlineTrainer(Trainer):
                     action = self.agent.act(obs, t0=t == 0, eval_mode=True) # TODO: set use pi=False
                 
                 pred_reward = self.agent.predict_reward(obs, action)
+                pred_value = self.agent.predict_value(obs, action)
                 ep_pred_reward += pred_reward
+                ep_vals.append(pred_value)
                 obs, reward, done, truncated, info = self.env.step(action)
+                ep_real_rewards.append(reward)
                 
                 if save_traj:
-                    traj_plans.append({"plan": plan_info, "reward": reward, "pred_reward": pred_reward})
+                    traj_plans.append({"plan": plan_info, "reward": reward, "pred_reward": pred_reward, "pred_value": pred_value})
 
                 done = done or truncated
                 ep_reward += reward
@@ -107,7 +112,25 @@ class OnlineTrainer(Trainer):
                 if self.cfg.save_video:
                     self.logger.video.record(self.env)
             
+            # Calculate discounted returns
+            discount = self.agent._get_discount(self.cfg.episode_length)
+            G = 0
+            returns = []
+            for r in reversed(ep_real_rewards):
+                G = r + discount * G
+                returns.insert(0, G)
+            ep_values_pred.append(np.nanmean(ep_vals))
+            # Just incase there are no returns
+            if len(returns) > 0:
+                ep_values_real.append(np.nanmean(returns))
+            else:
+                ep_values_real.append(np.nan)
+
             if save_traj:
+                for t_step, return_val in enumerate(returns):
+                    if t_step < len(traj_plans):
+                         traj_plans[t_step]["value_real"] = return_val
+
                 save_dir = os.path.join(self.cfg.work_dir, "eval_trajectories")
                 os.makedirs(save_dir, exist_ok=True)
                 
@@ -141,6 +164,8 @@ class OnlineTrainer(Trainer):
         return dict(
             episode_reward=np.nanmean(ep_rewards),
             episode_reward_pred=np.nanmean(ep_rewards_pred),
+            episode_value_pred=np.nanmean(ep_values_pred),
+            episode_value_real=np.nanmean(ep_values_real),
             episode_success=np.nanmean(ep_successes),
             episode_reward_pi=np.nanmean(ep_rewards_pi) if self.cfg.eval_pi else np.nan,
             episode_success_pi=np.nanmean(ep_successes_pi) if self.cfg.eval_pi else np.nan,
