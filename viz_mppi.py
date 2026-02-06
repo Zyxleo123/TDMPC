@@ -154,19 +154,41 @@ if st.session_state.get('data_loaded'):
             )
             st.plotly_chart(fig_rew, use_container_width=True)
 
+        # --- Value Analysis ---
+        if plans and 'value_real' in plans[0]:
+            # Extract and ensure values are floats (handle tensors if present)
+            v_true = [p['value_real'].item() if torch.is_tensor(p['value_real']) else p['value_real'] for p in plans]
+            v_pred = [p.get('pred_value', 0).item() if torch.is_tensor(p.get('pred_value', 0)) else p.get('pred_value', 0) for p in plans]
+            
+            fig_val = go.Figure()
+            fig_val.add_trace(go.Scatter(y=v_true, mode='lines', name='True Value'))
+            fig_val.add_trace(go.Scatter(y=v_pred, mode='lines', name='Pred Value'))
+            
+            # Add indicator for current timestep
+            fig_val.add_vline(x=frame_idx, line_width=2, line_dash="dash", line_color="green", annotation_text="Current")
+            
+            fig_val.update_layout(
+                height=200,
+                margin=dict(l=20, r=20, t=20, b=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig_val, use_container_width=True)
+
         # --- B. Display Plotly Grid ---
         st.subheader("MPPI Optimization Landscape")
         
         num_iters = len(current_plan)
-        horizon = current_plan[0]['mean'].shape[0]
+        horizon_eff = current_plan[0]['mean'].shape[0]
+        horizon_full = current_plan[0]['elite_actions'].shape[0]
+        time_chunk_size = horizon_full // horizon_eff
         
         # Create Subplots
         fig = make_subplots(
-            rows=horizon, cols=num_iters,
+            rows=horizon_eff, cols=num_iters,
             shared_xaxes=True, shared_yaxes=True,
             horizontal_spacing=0.01, vertical_spacing=0.01,
             column_titles=[f"Iter {i}" for i in range(num_iters)],
-            row_titles=[f"t={t}" for t in range(horizon)]
+            row_titles=[f"t={t}" for t in range(horizon_eff)]
         )
 
         for col_idx, data in enumerate(current_plan):
@@ -188,17 +210,18 @@ if st.session_state.get('data_loaded'):
             all_vals = data['values'].detach().cpu()
             elite_vals = all_vals[e_idxs, 0].numpy()
 
-            for t in range(horizon):
+            for t in range(horizon_eff):
+                t_idx = t * time_chunk_size
                 # 1. Elites
                 hover_text = [
-                    f"<b>Idx:</b> {i}<br><b>Reward:</b> {elite_rews[t, i]:.4f}<br><b>Q:</b> {elite_qs[i]:.4f}<br><b>Value:</b> {elite_vals[i]:.4f}<br><b>Weight:</b> {scores[i]:.4f}" 
+                    f"<b>Idx:</b> {i}<br><b>Reward:</b> {elite_rews[t_idx, i]:.4f}<br><b>Q:</b> {elite_qs[i]:.4f}<br><b>Value:</b> {elite_vals[i]:.4f}<br><b>Weight:</b> {scores[i]:.4f}" 
                     for i in range(len(scores))
                 ]
                 
                 fig.add_trace(
                     go.Scattergl( # Use WebGL for speed
-                        x=elite_actions[t, :, 0],
-                        y=elite_actions[t, :, 1],
+                        x=elite_actions[t_idx, :, 0],
+                        y=elite_actions[t_idx, :, 1],
                         mode='markers',
                         marker=dict(
                             size=8,
@@ -240,7 +263,7 @@ if st.session_state.get('data_loaded'):
                 )
 
         fig.update_layout(
-            height=horizon * 250, # Dynamic height
+            height=horizon_eff * 250, # Dynamic height
             margin=dict(l=40, r=20, t=40, b=20),
             showlegend=False,
             paper_bgcolor='rgba(0,0,0,0)',
