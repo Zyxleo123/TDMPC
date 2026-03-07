@@ -39,6 +39,7 @@ buffer_size: 1_000_000
 data_dir: ???
 dyna: False
 dyna_coef: 0.0 # 0.05
+reward_decay: 0.0 # exponential decay for sparse rewards; 0.0 = disabled
 # exp mode
 exp_name: default
 record_q_scale: true # record curve of action value scale
