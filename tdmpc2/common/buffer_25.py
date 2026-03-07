@@ -97,6 +97,19 @@ class Buffer:
         task = td["task"][0] if "task" in td.keys() else None
         return self._to_device(obs, action, mu, std, reward, task)
 
+    def _apply_reward_decay(self, td):
+        """
+        Apply backward exponential decay to propagate future rewards to earlier steps.
+        For a reward sequence (0, 0, 100) with decay=0.9, this produces (81, 90, 100).
+        Formula: reward[i] = reward[i] + decay * reward[i+1], applied from end to start.
+        td["reward"][0] is NaN (placeholder for the initial obs), so we start from index 1.
+        """
+        decay = self.cfg.reward_decay
+        rewards = td["reward"]  # shape (T,), rewards[0] is NaN
+        for i in range(len(rewards) - 2, 0, -1):
+            rewards[i] = rewards[i] + decay * rewards[i + 1]
+        td["reward"] = rewards
+
     def add(self, td):
         """Add an episode to the buffer."""
         td["episode"] = torch.ones_like(td["reward"], dtype=torch.int64) * self._num_eps
@@ -105,6 +118,9 @@ class Buffer:
         if len(td["episode"]) <= self.cfg.horizon + 1:
             return self._num_eps
         ################################
+
+        if self.cfg.reward_decay > 0.0:
+            self._apply_reward_decay(td)
 
         if self._num_eps == 0:
             self._buffer = self._init(td)
