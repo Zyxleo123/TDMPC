@@ -45,7 +45,14 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
             / cfg.exp_name
         )
     else:
-        cfg.work_dir = Path(cfg.work_dir)
+        cfg.work_dir = (
+            cfg.work_dir
+            / "logs"
+            / cfg.task
+            / str(cfg.seed)
+            / cfg.wandb_project
+            / cfg.exp_name
+        )
     cfg.task_title = cfg.task.replace("-", " ").title()
     cfg.bin_size = (cfg.vmax - cfg.vmin) / (
         cfg.num_bins - 1
