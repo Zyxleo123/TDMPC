@@ -25,7 +25,7 @@ class Buffer:
             traj_key="episode",
             truncated_key=None,
         )
-        self._batch_size = cfg.batch_size * (cfg.horizon + 1)
+        self._batch_size = cfg.batch_size * (cfg.train_horizon + 1)
         self._num_eps = 0
 
     @property
@@ -100,7 +100,7 @@ class Buffer:
         td["episode"] = torch.ones_like(td["reward"], dtype=torch.int64) * self._num_eps
 
         # FIX for HumanoidBench #
-        if len(td["episode"]) <= self.cfg.horizon + 1:
+        if len(td["episode"]) <= self.cfg.train_horizon + 1:
             return self._num_eps
         ################################
 
@@ -112,5 +112,5 @@ class Buffer:
 
     def sample(self):
         """Sample a batch of subsequences from the buffer."""
-        td = self._buffer.sample().view(-1, self.cfg.horizon + 1).permute(1, 0)
+        td = self._buffer.sample().view(-1, self.cfg.train_horizon + 1).permute(1, 0)
         return self._prepare_batch(td)

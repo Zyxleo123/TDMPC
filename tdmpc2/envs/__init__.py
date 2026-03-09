@@ -14,7 +14,7 @@ def missing_dependencies(task):
     )
 
 
-from tdmpc2.envs.dmcontrol import make_env as make_dm_control_env
+# from tdmpc2.envs.dmcontrol import make_env as make_dm_control_env
 from tdmpc2.envs.humanoid import make_env as make_humanoid_env
 from tdmpc2.envs.maniskill import make_env as make_maniskill_env
 # try:
@@ -75,7 +75,7 @@ def make_env(cfg):
         env = None
         for fn in [
             make_humanoid_env,
-            make_dm_control_env,
+            # make_dm_control_env,
             make_maniskill_env,
             make_metaworld_env,
             make_myosuite_env,

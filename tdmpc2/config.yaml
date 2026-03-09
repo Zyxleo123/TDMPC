@@ -21,6 +21,7 @@ eval_value: True # TODO: False
 eval_freq: 2000
 
 # training
+n_updates: 1 # number of gradient updates per environment step
 steps: 1_000_000 # TODO: 2_000_000 for hard tasks
 batch_size: 256
 log_freq: 4 #4 for driving, 1 for other tasks
@@ -40,11 +41,20 @@ data_dir: ???
 dyna: False
 dyna_coef: 0.0 # 0.05
 reward_decay: 0.0 # exponential decay for sparse rewards; 0.0 = disabled
+# priority buffer (Z-score peak detection)
+priority_buffer_ratio: 0.0   # fraction of batch from priority buffer; 0.0 = disabled
+priority_buffer_k: 2.0       # Z-score threshold for peak detection
+priority_buffer_window: 20    # steps before peak to include in snippet
+priority_buffer_size: 100_000 # capacity of priority buffer in steps; smaller = more recency bias
+reward_ema_alpha: 0.95       # EMA decay for running reward statistics
 # exp mode
 exp_name: default
 record_q_scale: true # record curve of action value scale
 record_pi_q_scale: false # record curve of policy action value scale
 use_pi_prob: 0.0 # use policy probability to calculate action value
+
+# training slice
+train_horizon: 3          # length of each training subsequence sampled from replay buffer
 
 # planning
 planner_mode: "default" # ["default", "loop"]
@@ -98,7 +108,7 @@ wandb_entity: zyxleo
 wandb_silent: false
 disable_wandb: true
 save_csv: true
-save_freq: 1000000
+save_freq: 20000
 save_trajectories: true
 
 # misc

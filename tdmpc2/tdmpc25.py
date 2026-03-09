@@ -747,7 +747,7 @@ class TDMPC2:
 
 		# Latent rollout
 		zs = torch.empty(
-			self.cfg.horizon + 1,
+			self.cfg.train_horizon + 1,
 			self.cfg.batch_size,
 			self.cfg.latent_dim,
 			device=self.device,
@@ -755,7 +755,7 @@ class TDMPC2:
 		z = self.model.encode(obs[0], task)
 		zs[0] = z
 		consistency_loss = 0
-		for t in range(self.cfg.horizon):
+		for t in range(self.cfg.train_horizon):
 			z = self.model.next(z, action[t], task)
 			consistency_loss += F.mse_loss(z, next_z[t]) * self.cfg.rho**t
 			zs[t + 1] = z
@@ -782,26 +782,26 @@ class TDMPC2:
 		if self.cfg.dyna: #and self.cfg.scale_threshold < self.scale.value:
 			# Rollout with model predictions
 			_zs_sim = torch.empty(
-				self.cfg.horizon + 1,
+				self.cfg.train_horizon + 1,
 				self.cfg.batch_size,
 				self.cfg.latent_dim,
 				device=self.device,
 			)
 			_as_sim = torch.empty(
-				self.cfg.horizon,
+				self.cfg.train_horizon,
 				self.cfg.batch_size,
 				self.cfg.action_dim,
 				device=self.device,
 			)
 			_rs_sim = torch.empty(
-				self.cfg.horizon, self.cfg.batch_size, 1, device=self.device
+				self.cfg.train_horizon, self.cfg.batch_size, 1, device=self.device
 			)
 			_zs_sim[0] = z
 			_td_targets_sim = 0
 
 			with torch.no_grad():
-				for t in range(self.cfg.horizon):
-					# Sample model predi	
+				for t in range(self.cfg.train_horizon):
+					# Sample model predi
 					_a_sim = self.model.pi(_zs_sim[t], task)[1]
 					_as_sim[t] = _a_sim
 					if self.cfg.num_bins > 1:
@@ -825,7 +825,7 @@ class TDMPC2:
 			# 		math.soft_ce(_q_0[q], _td_targets_sim, self.cfg).mean()
 			# 	)
 			_dyna_qs = self.model.Q(_zs_sim[:-1], _as_sim, task, return_type="all")
-			for t in range(self.cfg.horizon):
+			for t in range(self.cfg.train_horizon):
 				for q in range(self.cfg.num_q):
 					if self.cfg.num_bins > 1:
 						dyna_q_loss += (
@@ -837,7 +837,7 @@ class TDMPC2:
 							F.mse_loss(_dyna_qs[q][t].squeeze(-1), _td_targets_sim[t])
 							* self.cfg.rho**t
 						)
-			dyna_q_loss /= (self.cfg.horizon * self.cfg.num_q)
+			dyna_q_loss /= (self.cfg.train_horizon * self.cfg.num_q)
 			
 		# elif self.cfg.dyna:
 		# 	dyna_q_loss = torch.tensor(0.0, device=self.device)
@@ -850,7 +850,7 @@ class TDMPC2:
 
 		# Compute losses
 		reward_loss, value_loss = 0, 0
-		for t in range(self.cfg.horizon):
+		for t in range(self.cfg.train_horizon):
 			if self.cfg.num_bins > 1:
 				reward_loss += (
 					math.soft_ce(reward_preds[t], reward[t], self.cfg).mean()
@@ -872,9 +872,9 @@ class TDMPC2:
 						* self.cfg.rho**t
 					)
 
-		consistency_loss *= 1 / self.cfg.horizon
-		reward_loss *= 1 / self.cfg.horizon
-		value_loss *= 1 / (self.cfg.horizon * self.cfg.num_q)
+		consistency_loss *= 1 / self.cfg.train_horizon
+		reward_loss *= 1 / self.cfg.train_horizon
+		value_loss *= 1 / (self.cfg.train_horizon * self.cfg.num_q)
 
 		if self.cfg.dyna:
 			total_loss = (
