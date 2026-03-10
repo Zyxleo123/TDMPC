@@ -46,7 +46,7 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
         )
     else:
         cfg.work_dir = (
-            cfg.work_dir
+            Path(cfg.work_dir)
             / "logs"
             / cfg.task
             / str(cfg.seed)
