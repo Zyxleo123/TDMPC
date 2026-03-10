@@ -104,7 +104,7 @@ class OnlineTrainer(Trainer):
                 ep_real_rewards.append(reward)
                 
                 if save_traj:
-                    traj_plans.append({"plan": plan_info, "reward": reward, "pred_reward": pred_reward, "pred_value": pred_value})
+                    traj_plans.append({"plan": plan_info, "reward": reward, "pred_reward": pred_reward, "pred_value": pred_value, "obs": obs})
 
                 done = done or truncated
                 ep_reward += reward
