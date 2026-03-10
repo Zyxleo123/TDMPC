@@ -680,25 +680,40 @@ class TDMPC2:
 		return pi_loss.item(), q_loss.item(), prior_loss.item()
 
 	@torch.no_grad()
-	def _td_target(self, next_z, reward, task):
+	def _td_target(self, next_z, reward, task, n_step=1):
 		"""
-		Compute the TD-target from a reward and the observation at the following time step.
+		Compute the n-step TD-target.
+
+		For n_step=1 (default), equivalent to: reward + γ * Q(next_z).
+		For n_step>1: Σ_{k=0}^{n-1} γ^k * reward[t+k] + γ^n * Q(next_z[t+n]).
 
 		Args:
-				next_z (torch.Tensor): Latent state at the following time step.
-				reward (torch.Tensor): Reward at the current time step.
+				next_z (torch.Tensor): Latent states at following time steps, shape [T, B, latent_dim].
+				reward (torch.Tensor): Rewards at each time step, shape [T, B, 1].
 				task (torch.Tensor): Task index (only used for multi-task experiments).
+				n_step (int): Number of steps for n-step TD returns.
 
 		Returns:
-				torch.Tensor: TD-target.
+				torch.Tensor: TD-targets of shape [T-n_step+1, B, 1].
 		"""
-		pi = self.model.pi(next_z, task)[1]
 		discount = (
 			self.discount[task].unsqueeze(-1) if self.cfg.multitask else self.discount
 		)
-		return reward + discount * self.model.Q(
-			next_z, pi, task, return_type="min", target=True
+		T = reward.shape[0]
+		num_targets = T - n_step + 1
+
+		# Sum discounted rewards over n steps
+		targets = torch.zeros(num_targets, reward.shape[1], reward.shape[2], device=reward.device)
+		for k in range(n_step):
+			targets = targets + (discount ** k) * reward[k:k + num_targets]
+
+		# Bootstrap from latent state n steps ahead
+		bootstrap_z = next_z[n_step - 1:]  # [num_targets, B, latent_dim]
+		pi = self.model.pi(bootstrap_z, task)[1]
+		targets = targets + (discount ** n_step) * self.model.Q(
+			bootstrap_z, pi, task, return_type="min", target=True
 		)
+		return targets
 	
 	@torch.no_grad()
 	def _td_H_q(self, next_z, reward, task):
@@ -734,9 +749,10 @@ class TDMPC2:
 			obs, action, mu, std, reward, task = buffer.sample() # mu and std are from Gaussian policy used for data collection	
 
 		# Compute targets
+		n_step = getattr(self.cfg, 'n_step', 1)
 		with torch.no_grad():
 			next_z = self.model.encode(obs[1:], task)
-			td_targets = self._td_target(next_z, reward, task)
+			td_targets = self._td_target(next_z, reward, task, n_step=n_step)
 			td_H_q = self._td_H_q(next_z, reward, task)	
 			init_q = self.model.Q(self.model.encode(obs[0], task), action[0], task, return_type="avg")
 			il_flag = td_H_q > init_q
@@ -849,6 +865,7 @@ class TDMPC2:
 		reward_preds = self.model.reward(_zs, action, task)
 
 		# Compute losses
+		num_td_targets = td_targets.shape[0]  # T - n_step + 1
 		reward_loss, value_loss = 0, 0
 		for t in range(self.cfg.train_horizon):
 			if self.cfg.num_bins > 1:
@@ -856,16 +873,19 @@ class TDMPC2:
 					math.soft_ce(reward_preds[t], reward[t], self.cfg).mean()
 					* self.cfg.rho**t
 				)
+			else:
+				reward_loss += (
+					F.mse_loss(reward_preds[t].squeeze(-1), reward[t])
+					* self.cfg.rho**t
+				)
+		for t in range(num_td_targets):
+			if self.cfg.num_bins > 1:
 				for q in range(self.cfg.num_q):
 					value_loss += (
 						math.soft_ce(qs[q][t], td_targets[t], self.cfg).mean()
 						* self.cfg.rho**t
 					)
 			else:
-				reward_loss += (
-					F.mse_loss(reward_preds[t].squeeze(-1), reward[t])
-					* self.cfg.rho**t
-				)
 				for q in range(self.cfg.num_q):
 					value_loss += (
 						F.mse_loss(qs[q][t].squeeze(-1), td_targets[t])
@@ -874,7 +894,7 @@ class TDMPC2:
 
 		consistency_loss *= 1 / self.cfg.train_horizon
 		reward_loss *= 1 / self.cfg.train_horizon
-		value_loss *= 1 / (self.cfg.train_horizon * self.cfg.num_q)
+		value_loss *= 1 / (num_td_targets * self.cfg.num_q)
 
 		if self.cfg.dyna:
 			total_loss = (

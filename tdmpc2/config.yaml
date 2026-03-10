@@ -86,6 +86,7 @@ vmin: -10
 vmax: +10
 
 # Value;
+n_step: 20 # n-step TD
 v_loss_type: "asy_l2" # ["soft_ce", "asy_l2"]
 v_tau: 0.9 # NOTE: only applicable for "asy_l2" loss, 0.5 equals to L2 loss.
 
