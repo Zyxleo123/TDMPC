@@ -44,7 +44,7 @@ def get_steps_and_episodes(log_path):
 
 # --- 2. Sidebar Controls ---
 st.sidebar.title("MPPI Controls")
-search_root = st.sidebar.text_input("Search Root", value='logs')
+search_root = st.sidebar.text_input("Search Root", value='/zfsauton/scratch/yixiz/logs')
 
 available_logs = find_available_logs(search_root)
 if available_logs:
