@@ -15,7 +15,7 @@ st.set_page_config(layout="wide", page_title="MPPI Debugger")
 @st.cache_data(show_spinner=True)
 def load_log_data(path, step, ep):
     full_path = os.path.join(path, f'plans_step_{step}_ep_{ep}.pt')
-    data = torch.load(full_path, map_location='cpu')
+    data = torch.load(full_path, map_location='cpu', weights_only=False)
     return data['frames'], data['traj_plans']
 
 @st.cache_data
