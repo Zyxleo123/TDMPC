@@ -115,7 +115,6 @@ save_trajectories: true
 # latent collapse diagnostic (compute_effective_rank.py)
 data: ???
 data_key: obs
-batch_size: 1024
 task_id: 0
 plot: false
 out_dir: /zfsauton/scratch/yixiz/plots
