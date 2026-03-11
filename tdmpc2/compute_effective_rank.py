@@ -326,7 +326,7 @@ def main(cfg):
         obs_shape = tuple(sample_obs.shape)
         cfg.obs_shape = {cfg.obs: obs_shape}
         # action_dim from plan mean (shape: [horizon, action_dim])
-        sample_mean = steps[0]["plan"]["mean"]
+        sample_mean = steps[0]["plan"][0]["mean"]
         cfg.action_dim = int(sample_mean.shape[-1])
         # episode_length from trajectory length
         cfg.episode_length = len(steps)
