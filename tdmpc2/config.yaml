@@ -118,7 +118,7 @@ data_key: obs
 batch_size: 1024
 task_id: 0
 plot: false
-out_dir: .
+out_dir: /zfsauton/scratch/yixiz/plots
 
 # misc
 save_video: true
