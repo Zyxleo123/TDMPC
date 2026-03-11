@@ -117,7 +117,7 @@ data: ???
 data_key: obs
 task_id: 0
 plot: false
-out_dir: /zfsauton/scratch/yixiz/plots
+out_dir: .
 
 # misc
 save_video: true
