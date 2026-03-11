@@ -54,6 +54,7 @@ from termcolor import colored
 from tdmpc2.common.parser import parse_cfg
 from tdmpc2.common.seed import set_seed
 from tdmpc2.tdmpc25 import TDMPC2
+from tdmpc2.envs import make_env
 
 
 # ─── Collapse metrics ─────────────────────────────────────────────────────────
@@ -311,6 +312,10 @@ def main(cfg):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(colored(f"Device: {device}", "blue"))
+
+    # ── Build env to populate cfg.obs_shape / action_dim / episode_length ─────
+    env = make_env(cfg)
+    env.close()
 
     # ── Load agent ─────────────────────────────────────────────────────────────
     print(colored(f"Loading checkpoint: {cfg.checkpoint}", "blue", attrs=["bold"]))
