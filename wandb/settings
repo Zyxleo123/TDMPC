@@ -1,0 +1,5 @@
+[default]
+entity = zyxleo
+project = tdmpc-test
+base_url = https://api.wandb.ai
+

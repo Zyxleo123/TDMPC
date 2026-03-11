@@ -54,7 +54,6 @@ from termcolor import colored
 from tdmpc2.common.parser import parse_cfg
 from tdmpc2.common.seed import set_seed
 from tdmpc2.tdmpc25 import TDMPC2
-from tdmpc2.envs import make_env
 
 
 # ─── Collapse metrics ─────────────────────────────────────────────────────────
@@ -313,9 +312,32 @@ def main(cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(colored(f"Device: {device}", "blue"))
 
-    # ── Build env to populate cfg.obs_shape / action_dim / episode_length ─────
-    env = make_env(cfg)
-    env.close()
+    # ── Infer obs_shape / action_dim / episode_length from trajectory file ─────
+    # Peek at the first data file to extract these without needing the environment.
+    peek_path = cfg.data if "*" not in cfg.data and "?" not in cfg.data \
+                else sorted(glob(cfg.data))[0]
+    peek = torch.load(peek_path, map_location="cpu")
+    if isinstance(peek, dict) and "traj_plans" in peek:
+        steps = peek["traj_plans"]
+        # obs shape
+        sample_obs = steps[0]["obs"]
+        if not isinstance(sample_obs, torch.Tensor):
+            sample_obs = torch.tensor(np.array(sample_obs))
+        obs_shape = tuple(sample_obs.shape)
+        cfg.obs_shape = {cfg.obs: obs_shape}
+        # action_dim from plan mean (shape: [horizon, action_dim])
+        sample_mean = steps[0]["plan"]["mean"]
+        cfg.action_dim = int(sample_mean.shape[-1])
+        # episode_length from trajectory length
+        cfg.episode_length = len(steps)
+        print(f"Inferred from data: obs_shape={cfg.obs_shape}, "
+              f"action_dim={cfg.action_dim}, episode_length={cfg.episode_length}")
+    else:
+        raise RuntimeError(
+            "Could not infer model config from data file. "
+            "Only eval_trajectories .pt files (with 'traj_plans' key) are supported "
+            "for auto-inference. Pass a trajectory file or set obs_shape/action_dim manually."
+        )
 
     # ── Load agent ─────────────────────────────────────────────────────────────
     print(colored(f"Loading checkpoint: {cfg.checkpoint}", "blue", attrs=["bold"]))
