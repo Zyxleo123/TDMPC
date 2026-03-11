@@ -112,6 +112,14 @@ save_csv: true
 save_freq: 20000
 save_trajectories: true
 
+# latent collapse diagnostic (compute_effective_rank.py)
+data: ???
+data_key: obs
+batch_size: 1024
+task_id: 0
+plot: false
+out_dir: .
+
 # misc
 save_video: true
 save_agent: true
