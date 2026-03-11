@@ -43,10 +43,10 @@ dyna_coef: 0.0 # 0.05
 reward_decay: 0.0 # exponential decay for sparse rewards; 0.0 = disabled
 # priority buffer (Z-score peak detection)
 priority_buffer_ratio: 0.0   # fraction of batch from priority buffer; 0.0 = disabled
-priority_buffer_k: 2.0       # Z-score threshold for peak detection
+priority_buffer_k: 3.0       # Z-score threshold for peak detection
 priority_buffer_window: 20    # steps before peak to include in snippet
 priority_buffer_size: 100_000 # capacity of priority buffer in steps; smaller = more recency bias
-reward_ema_alpha: 0.95       # EMA decay for running reward statistics
+reward_ema_alpha: 0.999       # EMA decay for running reward statistics
 # exp mode
 exp_name: default
 record_q_scale: true # record curve of action value scale
@@ -54,7 +54,7 @@ record_pi_q_scale: false # record curve of policy action value scale
 use_pi_prob: 0.0 # use policy probability to calculate action value
 
 # training slice
-train_horizon: 3          # length of each training subsequence sampled from replay buffer
+train_horizon: 20          # length of each training subsequence sampled from replay buffer
 
 # planning
 planner_mode: "default" # ["default", "loop"]
