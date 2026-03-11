@@ -5,6 +5,8 @@ examples/
 logs/
 outputs/
 scripts/
+dependency/
+humanoid_bench/
 tdmpc2.egg-info/
 tdmpc2/logs/
 tdmpc2/outputs/
@@ -13,6 +15,9 @@ tdmpc2/wandb/
 setup.py
 LICENSE
 iai_api_key.txt
+*.txt
+*.gif
+settings
 
 # HPC
 nautilus/*.yaml
