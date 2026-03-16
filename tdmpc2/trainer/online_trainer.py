@@ -20,7 +20,11 @@ class OnlineTrainer(Trainer):
 
     def load_agent(self, log_dir):
         self.agent.load(log_dir)
-        print(f"Loaded agent from {log_dir}")
+        # Restore step count from checkpoint filename (e.g. "300000.pt")
+        stem = os.path.splitext(os.path.basename(log_dir))[0]
+        if stem.isdigit():
+            self._step = int(stem)
+        print(f"Loaded agent from {log_dir} (step={self._step})")
 
     def common_metrics(self):
         """Return a dictionary of current metrics."""

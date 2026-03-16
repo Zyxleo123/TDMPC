@@ -61,8 +61,20 @@ def train(cfg: dict):
         logger=Logger(cfg),
     )
 
-    if cfg.resume: # load model from resume_dir
-        trainer.load_agent(cfg.resume_dir)
+    if cfg.resume: # load model from resume_dir (or auto-detect latest checkpoint)
+        resume_dir = cfg.resume_dir
+        if resume_dir is None:
+            models_dir = os.path.join(cfg.work_dir, "models")
+            checkpoints = [
+                f for f in os.listdir(models_dir)
+                if f.endswith(".pt") and os.path.splitext(f)[0].isdigit()
+            ]
+            if not checkpoints:
+                raise FileNotFoundError(f"No checkpoints found in {models_dir}")
+            latest = max(checkpoints, key=lambda f: int(os.path.splitext(f)[0]))
+            resume_dir = os.path.join(models_dir, latest)
+            print(colored(f"Auto-resuming from latest checkpoint: {resume_dir}", "cyan", attrs=["bold"]))
+        trainer.load_agent(resume_dir)
     trainer.train()
 
     print("\nTraining completed successfully")
