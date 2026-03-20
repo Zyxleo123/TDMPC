@@ -29,11 +29,12 @@ class OnlineTrainer(Trainer):
         if stem.isdigit():
             self._step = int(stem)
         print(f"Loaded agent from {log_dir} (step={self._step})")
-        # Load buffer if a matching .buffer file exists
-        buffer_path = os.path.splitext(log_dir)[0] + '.buffer'
-        if os.path.exists(buffer_path):
-            self.buffer.load(buffer_path)
-            print(f"Loaded buffer from {buffer_path} ({len(self.buffer)} episodes)")
+        # Load buffer if a matching .buffer file exists and saving was enabled
+        if self.cfg.save_buffer:
+            buffer_path = os.path.splitext(log_dir)[0] + '.buffer'
+            if os.path.exists(buffer_path):
+                self.buffer.load(buffer_path)
+                print(f"Loaded buffer from {buffer_path} ({len(self.buffer)} episodes)")
 
     def common_metrics(self):
         """Return a dictionary of current metrics."""
@@ -349,8 +350,9 @@ class OnlineTrainer(Trainer):
 
             if self._step % self.cfg.save_freq == 0:
                 self.logger.save_agent(self.agent, identifier=f"{self._step}")
-                self.buffer.save(self.logger.model_dir / f"{self._step}.buffer")
-                print(f"Saved agent and buffer at step {self._step}")
+                if self.cfg.save_buffer:
+                    self.buffer.save(self.logger.model_dir / f"{self._step}.buffer")
+                print(f"Saved agent at step {self._step}")
 
             self._step += 1
 
@@ -467,8 +469,9 @@ class OnlineTrainer(Trainer):
 
             if self._step % self.cfg.save_freq == 0:
                 self.logger.save_agent(self.agent, identifier=f"{self._step}")
-                self.buffer.save(self.logger.model_dir / f"{self._step}.buffer")
-                print(f"Saved agent and buffer at step {self._step}")
+                if self.cfg.save_buffer:
+                    self.buffer.save(self.logger.model_dir / f"{self._step}.buffer")
+                print(f"Saved agent at step {self._step}")
 
             # Each physical step covers n_envs environment interactions.
             self._step += n_envs
