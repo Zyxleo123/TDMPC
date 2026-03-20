@@ -168,6 +168,14 @@ class Logger:
                 artifact.add_file(fp)
                 self._wandb.log_artifact(artifact)
 
+    def mark_resumed(self, checkpoint_path):
+        if self._wandb:
+            self._wandb.run.tags = self._wandb.run.tags + ("resumed",)
+            self._wandb.run.notes = (
+                (self._wandb.run.notes or "") + f"\nResumed from: {checkpoint_path}"
+            ).strip()
+            self._wandb.run.summary["resumed_from"] = str(checkpoint_path)
+
     def finish(self, agent=None):
         try:
             self.save_agent(agent)

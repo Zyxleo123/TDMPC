@@ -75,6 +75,7 @@ def train(cfg: dict):
             resume_dir = os.path.join(models_dir, latest)
             print(colored(f"Auto-resuming from latest checkpoint: {resume_dir}", "cyan", attrs=["bold"]))
         trainer.load_agent(resume_dir)
+        trainer.logger.mark_resumed(resume_dir)
     trainer.train()
 
     print("\nTraining completed successfully")
