@@ -68,6 +68,9 @@ class Buffer:
         """Return the number of episodes in the buffer."""
         return self._num_eps
 
+    def __len__(self):
+        return self._num_eps
+
     def _reserve_buffer(self, storage, sampler, batch_size):
         """Reserve a ReplayBuffer with the given storage, sampler, and batch size."""
         return ReplayBuffer(
