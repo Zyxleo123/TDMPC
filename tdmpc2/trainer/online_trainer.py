@@ -17,6 +17,7 @@ class OnlineTrainer(Trainer):
         self._step = 0
         self._ep_idx = 0
         self._start_time = time()
+        self._tds = []
         # For VecDriveEnvWrapper, use the embedded single eval_env for evaluation;
         # otherwise fall back to self.env (single env, already correct).
         self.eval_env = getattr(self.env, 'eval_env', self.env)
@@ -28,6 +29,11 @@ class OnlineTrainer(Trainer):
         if stem.isdigit():
             self._step = int(stem)
         print(f"Loaded agent from {log_dir} (step={self._step})")
+        # Load buffer if a matching .buffer file exists
+        buffer_path = os.path.splitext(log_dir)[0] + '.buffer'
+        if os.path.exists(buffer_path):
+            self.buffer.load(buffer_path)
+            print(f"Loaded buffer from {buffer_path} ({len(self.buffer)} episodes)")
 
     def common_metrics(self):
         """Return a dictionary of current metrics."""
@@ -287,7 +293,7 @@ class OnlineTrainer(Trainer):
                     self.logger.log(eval_metrics, "eval")
                     eval_next = False
 
-                if self._step > 0:
+                if self._step > 0 and self._tds:
                     train_metrics.update(
                         episode_reward=torch.tensor(
                             [td["reward"] for td in self._tds[1:]]
@@ -331,7 +337,7 @@ class OnlineTrainer(Trainer):
             self._tds.append(self.to_td(obs, action, mu, std, reward))
 
             # Update agent
-            if self._step >= self.cfg.seed_steps:
+            if self._step >= self.cfg.seed_steps and len(self.buffer) > 0:
                 if self._step == self.cfg.seed_steps:
                     num_updates = self.cfg.seed_steps
                     print("Pretraining agent on seed data...")
@@ -343,7 +349,8 @@ class OnlineTrainer(Trainer):
 
             if self._step % self.cfg.save_freq == 0:
                 self.logger.save_agent(self.agent, identifier=f"{self._step}")
-                print(f"Saved agent at step {self._step}")
+                self.buffer.save(self.logger.model_dir / f"{self._step}.buffer")
+                print(f"Saved agent and buffer at step {self._step}")
 
             self._step += 1
 
@@ -359,6 +366,7 @@ class OnlineTrainer(Trainer):
         train_log_return = []
         train_log_success = []
         train_log_ep_len = []
+        _pretrained = self._step >= self.cfg.seed_steps
 
         # Initialize: reset all envs, build per-env episode buffers.
         obs, _ = self.env.reset()  # (n_envs, *obs_shape)
@@ -446,7 +454,7 @@ class OnlineTrainer(Trainer):
             obs = self.env._current_obs
 
             # Gradient updates: maintain same update-to-data ratio as single-env.
-            if self._step >= self.cfg.seed_steps:
+            if self._step >= self.cfg.seed_steps and len(self.buffer) > 0:
                 if not _pretrained:
                     num_updates = self.cfg.seed_steps
                     print("Pretraining agent on seed data...")
@@ -459,7 +467,8 @@ class OnlineTrainer(Trainer):
 
             if self._step % self.cfg.save_freq == 0:
                 self.logger.save_agent(self.agent, identifier=f"{self._step}")
-                print(f"Saved agent at step {self._step}")
+                self.buffer.save(self.logger.model_dir / f"{self._step}.buffer")
+                print(f"Saved agent and buffer at step {self._step}")
 
             # Each physical step covers n_envs environment interactions.
             self._step += n_envs

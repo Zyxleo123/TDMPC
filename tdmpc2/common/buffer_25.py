@@ -224,6 +224,42 @@ class Buffer:
 
         return self._num_eps
 
+    def save(self, fp):
+        """Save buffer state to file. Does nothing if buffer is empty."""
+        if self._num_eps == 0:
+            return
+        state = {
+            '_num_eps': self._num_eps,
+            '_storage_state': self._buffer._storage.state_dict(),
+            '_writer_state': self._buffer._writer.state_dict(),
+        }
+        if self._use_priority:
+            state['_ema_mean'] = self._ema_mean
+            state['_ema_var'] = self._ema_var
+            state['_priority_num_eps'] = self._priority_num_eps
+            if self._priority_num_eps > 0:
+                state['_priority_storage_state'] = self._priority_buffer._storage.state_dict()
+                state['_priority_writer_state'] = self._priority_buffer._writer.state_dict()
+        torch.save(state, fp)
+
+    def load(self, fp):
+        """Load buffer state from file."""
+        state = torch.load(fp, map_location='cpu')
+        self._num_eps = state['_num_eps']
+        storage = LazyTensorStorage(self._capacity, device=torch.device('cpu'))
+        storage.load_state_dict(state['_storage_state'])
+        self._buffer = self._reserve_buffer(storage, self._sampler, self._batch_size)
+        self._buffer._writer.load_state_dict(state['_writer_state'])
+        if self._use_priority:
+            self._ema_mean = state.get('_ema_mean', 0.0)
+            self._ema_var = state.get('_ema_var', 1.0)
+            self._priority_num_eps = state.get('_priority_num_eps', 0)
+            if self._priority_num_eps > 0 and '_priority_storage_state' in state:
+                p_storage = LazyTensorStorage(self._priority_capacity, device=torch.device('cpu'))
+                p_storage.load_state_dict(state['_priority_storage_state'])
+                self._priority_buffer = self._reserve_buffer(p_storage, self._p_sampler, self._p_batch_size)
+                self._priority_buffer._writer.load_state_dict(state['_priority_writer_state'])
+
     def sample(self):
         """Sample a batch of subsequences from the buffer."""
         if self._use_priority and self._priority_num_eps > 0:
