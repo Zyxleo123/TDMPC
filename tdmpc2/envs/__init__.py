@@ -72,6 +72,22 @@ def make_env(cfg):
         env = make_multitask_env(cfg)
 
     else:
+        n_envs = cfg.get("n_envs", 1)
+        if n_envs > 1:
+            # Parallel env — only supported for torchdriveenv.
+            if not cfg.task.startswith("driveenv"):
+                raise ValueError(f"n_envs > 1 is only supported for torchdriveenv, got task={cfg.task}")
+            from tdmpc2.envs.torchdriveenv import make_parallel_env
+            # Build a single eval env first (standard path, always sequential).
+            eval_env = TensorWrapper(make_torchdriveenv_env(cfg))
+            env = make_parallel_env(cfg, n_envs, eval_env)
+            # Populate config from the single observation/action spaces.
+            cfg.obs_shape = {cfg.get("obs", "state"): env.observation_space.shape}
+            cfg.action_dim = env.action_space.shape[0]
+            cfg.episode_length = env.max_episode_steps
+            cfg.seed_steps = max(1000, 5 * cfg.episode_length)
+            return env
+
         env = None
         for fn in [
             make_humanoid_env,
