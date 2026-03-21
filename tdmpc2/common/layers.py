@@ -174,7 +174,12 @@ def enc(cfg, out={}):
                 act=SimNorm(cfg),
             )
         elif k == "rgb":
-            out[k] = conv(cfg.obs_shape[k], cfg.num_channels, cfg.latent_dim, act=SimNorm(cfg))
+            if cfg.get("enc_identity", False):
+                # Identity encoder: normalize pixels and flatten, no learned parameters.
+                # latent_dim must equal the flat pixel size (set in train.py before model init).
+                out[k] = nn.Sequential(PixelPreprocess(), nn.Flatten())
+            else:
+                out[k] = conv(cfg.obs_shape[k], cfg.num_channels, cfg.latent_dim, act=SimNorm(cfg))
         elif k == "waypointvec":
             # VectorNet encoder for vectorized scene representation
             # Expected shape: [n_objects, n_steps, n_features] e.g., [151, 9, 10]

@@ -52,10 +52,22 @@ def train(cfg: dict):
     set_seed(cfg.seed)
     print(colored("Work dir:", "yellow", attrs=["bold"]), cfg.work_dir)
 
+    env = make_env(cfg)
+
+    # If enc_identity is enabled, override latent_dim to match the flat pixel size.
+    # This must happen after make_env (which populates cfg.obs_shape) and before
+    # the model is built (which uses latent_dim to size all downstream networks).
+    if cfg.get("enc_identity", False):
+        import math as _math
+        obs_key = cfg.get("obs", "state")
+        flat_dim = _math.prod(cfg.obs_shape[obs_key])
+        cfg.latent_dim = flat_dim
+        print(colored(f"enc_identity=True: latent_dim set to {flat_dim} (flat pixel size)", "cyan", attrs=["bold"]))
+
     trainer_cls = OfflineTrainer if cfg.multitask else OnlineTrainer
     trainer = trainer_cls(
         cfg=cfg,
-        env=make_env(cfg),
+        env=env,
         agent=TDMPC2(cfg),
         buffer=Buffer(cfg),
         logger=Logger(cfg),

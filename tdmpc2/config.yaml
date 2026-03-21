@@ -106,6 +106,8 @@ num_q: 5
 dropout: 0.01
 simnorm_dim: 8
 reward_norm: false
+enc_identity: false  # if true, skip encoder and use raw flattened pixels as latent (latent_dim auto-set)
+disable_dynamics: false  # if true, disable learned dynamics model (not yet implemented)
 
 # logging
 wandb_project: humanoid-bench
