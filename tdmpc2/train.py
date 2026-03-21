@@ -68,14 +68,16 @@ def train(cfg: dict):
             checkpoints = [
                 f for f in os.listdir(models_dir)
                 if f.endswith(".pt") and os.path.splitext(f)[0].isdigit()
-            ]
+            ] if os.path.isdir(models_dir) else []
             if not checkpoints:
-                raise FileNotFoundError(f"No checkpoints found in {models_dir}")
-            latest = max(checkpoints, key=lambda f: int(os.path.splitext(f)[0]))
-            resume_dir = os.path.join(models_dir, latest)
-            print(colored(f"Auto-resuming from latest checkpoint: {resume_dir}", "cyan", attrs=["bold"]))
-        trainer.load_agent(resume_dir)
-        trainer.logger.mark_resumed(resume_dir)
+                print(colored(f"No checkpoints found in {models_dir}, starting fresh.", "yellow", attrs=["bold"]))
+            else:
+                latest = max(checkpoints, key=lambda f: int(os.path.splitext(f)[0]))
+                resume_dir = os.path.join(models_dir, latest)
+                print(colored(f"Auto-resuming from latest checkpoint: {resume_dir}", "cyan", attrs=["bold"]))
+        if resume_dir is not None:
+            trainer.load_agent(resume_dir)
+            trainer.logger.mark_resumed(resume_dir)
     trainer.train()
 
     print("\nTraining completed successfully")
