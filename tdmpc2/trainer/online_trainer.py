@@ -13,10 +13,10 @@ INFO_LATENT_DIM = 4  # psi_smoothness, speed_smoothness, offroad, dist_reward
 def extract_info_latent(info):
     """Extract 4-dim info latent vector from torchdriveenv info dict."""
     return torch.tensor([
-        float(info.get('psi_smoothness', 0.0)),
-        float(info.get('speed_smoothness', 0.0)),
-        float(info.get('offroad', 0.0)),
-        float(info.get('dist_reward', 0.0)),
+        float(info.get('psi_smoothness') or 0.0),
+        float(info.get('speed_smoothness') or 0.0),
+        float(info.get('offroad') or 0.0),
+        float(info.get('dist_reward') or 0.0),
     ], dtype=torch.float32)
 
 
