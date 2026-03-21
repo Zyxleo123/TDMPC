@@ -388,18 +388,12 @@ class OnlineTrainer(Trainer):
                 self.logger.log(eval_metrics, "eval")
                 eval_next = False
 
-            # Collect actions for all envs.
+            # Collect actions for all envs (batched encode + pi; plan loops over MPC envs).
             if self._step > self.cfg.seed_steps:
-                actions, mus, stds = [], [], []
-                for i in range(n_envs):
-                    t0 = len(_tds_all[i]) == 1
-                    a, mu, std = self.agent.act(obs[i], t0=t0, use_pi=use_pi_flags[i])
-                    actions.append(a)
-                    mus.append(mu)
-                    stds.append(std)
-                actions = torch.stack(actions)   # (n_envs, action_dim)
-                mus = torch.stack(mus)
-                stds = torch.stack(stds)
+                t0_flags = [len(_tds_all[i]) == 1 for i in range(n_envs)]
+                actions, mus, stds = self.agent.act_vec(
+                    obs, t0_flags, use_pi_flags=use_pi_flags
+                )
             else:
                 actions = self.env.rand_act()    # (n_envs, action_dim)
                 mus = actions.detach().clone()

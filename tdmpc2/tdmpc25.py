@@ -194,6 +194,79 @@ class TDMPC2:
 			return a.cpu(), mu.cpu(), std.cpu()
 
 	@torch.no_grad()
+	def act_vec(self, obs_batch, t0_flags, eval_mode=False, task=None, use_pi_flags=None):
+		"""Batched action selection for n_envs environments.
+
+		Fuses the encoder forward pass into a single GPU call, then runs
+		planning (or policy) per-env using the pre-computed latents.
+
+		Args:
+			obs_batch (torch.Tensor): shape (n_envs, *obs_shape)
+			t0_flags (list[bool]): per-env first-step flag
+			eval_mode (bool): deterministic actions
+			task: task index (multi-task only)
+			use_pi_flags (list[bool]): per-env flag to use policy instead of MPC
+
+		Returns:
+			actions (n_envs, action_dim), mus (n_envs, action_dim), stds (n_envs, action_dim)
+		"""
+		n = obs_batch.shape[0]
+		if use_pi_flags is None:
+			use_pi_flags = [False] * n
+
+		# --- single batched encode ---
+		obs_batch = obs_batch.to(self.device, non_blocking=True)
+		if task is not None:
+			task_tensor = torch.tensor([task] * n, device=self.device)
+		else:
+			task_tensor = None
+		z_batch = self.model.encode(obs_batch, task_tensor)  # (n, latent_dim)
+
+		actions = torch.empty(n, self.cfg.action_dim)
+		mus     = torch.empty(n, self.cfg.action_dim)
+		stds    = torch.empty(n, self.cfg.action_dim)
+
+		mpc_idxs = [i for i in range(n) if self.cfg.mpc and not use_pi_flags[i]]
+		pi_idxs  = [i for i in range(n) if not (self.cfg.mpc and not use_pi_flags[i])]
+
+		# --- batch pi envs (single model.pi forward) ---
+		if pi_idxs:
+			z_pi = z_batch[pi_idxs]
+			task_pi = task_tensor[pi_idxs] if task_tensor is not None else None
+			mu_all, pi_all, _, log_std_all = self.model.pi(z_pi, task_pi)
+			for local_j, global_i in enumerate(pi_idxs):
+				a = mu_all[local_j] if eval_mode else pi_all[local_j]
+				actions[global_i] = a.cpu()
+				mus[global_i]     = mu_all[local_j].cpu()
+				stds[global_i]    = log_std_all.exp()[local_j].cpu()
+
+		# --- MPC envs: fully batched planning ---
+		if mpc_idxs:
+			mpc_idx_t = torch.tensor(mpc_idxs, device=self.device)
+			# Lazily init or resize persistent prev_mean (n_envs, H, action_dim)
+			if not hasattr(self, '_prev_mean_vec') or self._prev_mean_vec.shape[0] != n:
+				self._prev_mean_vec = torch.zeros(
+					n, self.cfg.horizon, self.cfg.action_dim, device=self.device
+				)
+
+			z_mpc       = z_batch[mpc_idx_t]
+			task_mpc    = task_tensor[mpc_idx_t] if task_tensor is not None else None
+			prev_mean   = self._prev_mean_vec[mpc_idx_t]
+			t0_mpc      = [t0_flags[i] for i in mpc_idxs]
+
+			a_mpc, mu_mpc, std_mpc, new_mean = self._plan(
+				z_mpc, t0_mpc, eval_mode=eval_mode, task=task_mpc, prev_mean=prev_mean
+			)
+			self._prev_mean_vec[mpc_idx_t] = new_mean
+
+			for local_j, global_i in enumerate(mpc_idxs):
+				actions[global_i] = a_mpc[local_j].cpu()
+				mus[global_i]     = mu_mpc[local_j].cpu()
+				stds[global_i]    = std_mpc[local_j].cpu()
+
+		return actions, mus, stds
+
+	@torch.no_grad()
 	def _estimate_value(self, z, actions, task, horizon, eval_mode=False, return_details=False):
 		"""Estimate value of a trajectory starting at latent state z and executing given actions."""
 		G, discount = 0, 1
@@ -482,19 +555,20 @@ class TDMPC2:
 	# 	return a.clamp_(-1, 1), mu, std
 	
 	@torch.no_grad()
-	def _plan(self, z, t0=False, eval_mode=False, task=None):
+	def _plan(self, z, t0_flags, eval_mode=False, task=None, prev_mean=None):
 		"""
-		Plan a sequence of actions using the learned world model.
-		for parallelized version of plan.
+		Batched MPPI planning for num_envs environments in parallel.
 
 		Args:
-			z (torch.Tensor): Latent state from which to plan.
-			t0 (bool): Whether this is the first observation in the episode.
-			eval_mode (bool): Whether to use the mean of the action distribution.
-			task (Torch.Tensor): Task index (only used for multi-task experiments).
+			z (torch.Tensor): Latent states, shape (num_envs, latent_dim).
+			t0_flags (list[bool] or BoolTensor): Per-env first-step flag.
+			eval_mode (bool): Deterministic action selection.
+			task: Task index (multi-task only).
+			prev_mean (torch.Tensor | None): Previous mean, shape (num_envs, horizon, action_dim).
 
 		Returns:
-			torch.Tensor: Action to take in the environment.
+			action (num_envs, action_dim), mu (num_envs, action_dim),
+			std (num_envs, action_dim), mean (num_envs, horizon, action_dim)
 		"""
 		num_envs = z.size(0)
 		# Sample policy trajectories
@@ -510,12 +584,15 @@ class TDMPC2:
 		z = z.unsqueeze(1).repeat(1, self.cfg.num_samples, 1)
 		mean = torch.zeros(num_envs, self.cfg.horizon, self.cfg.action_dim, device=self.device)
 		std = self.cfg.max_std*torch.ones(num_envs, self.cfg.horizon, self.cfg.action_dim, device=self.device)
-		if not t0:
-			mean[:, :-1] = self._prev_mean[:, 1:]
+		# Per-env warm-starting: only shift mean for envs that are not at t0
+		if prev_mean is not None:
+			not_t0 = ~torch.as_tensor(t0_flags, dtype=torch.bool, device=self.device)
+			if not_t0.any():
+				mean[not_t0, :-1] = prev_mean[not_t0, 1:]
 		actions = torch.empty(num_envs, self.cfg.horizon, self.cfg.num_samples, self.cfg.action_dim, device=self.device)
 		if self.cfg.num_pi_trajs > 0:
 			actions[:, :, :self.cfg.num_pi_trajs] = pi_actions
-	
+
 		# Iterate MPPI
 		for _ in range(self.cfg.iterations):
 
@@ -544,14 +621,13 @@ class TDMPC2:
 				mean = mean * self.model._action_masks[task]
 				std = std * self.model._action_masks[task]
 
-		# Select action
-		rand_idx = math.gumbel_softmax_sample(score.squeeze(2), dim=1)  # gumbel_softmax_sample is compatible with cuda graphs
+		# Select action: sample one elite per env proportional to score
+		rand_idx = torch.multinomial(score.squeeze(2), num_samples=1).squeeze(1)  # (num_envs,)
 		actions = elite_actions[torch.arange(num_envs), :, rand_idx]
-		action, std = actions[:, 0], std[:, 0]
+		action, mu, std_out = actions[:, 0], mean[:, 0], std[:, 0]
 		if not eval_mode:
-			action = action + std * torch.randn(self.cfg.action_dim, device=std.device)
-		self._prev_mean.copy_(mean)
-		return action.clamp(-1, 1)
+			action = action + std_out * torch.randn_like(action)
+		return action.clamp(-1, 1), mu, std_out, mean
 
 	def update_pi(self, zs, action, mu, std, task, il_flag=None):
 		"""
