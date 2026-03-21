@@ -7,6 +7,9 @@ obs: state
 # obs_nframes: 3
 #
 # environment
+frame_stack: 3
+
+# environment
 waypoint_bonus: 100.
 heading_penalty: 25.
 distance_bonus: 1.

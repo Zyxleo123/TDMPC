@@ -86,7 +86,7 @@ def make_env(cfg):
     validation_data = load_default_validation_data()
 
     ego_only = False if "multi_agent" in cfg.task else True
-    frame_stack = 3
+    frame_stack = cfg.frame_stack
     env_config = {
         "ego_only": ego_only,
         "frame_stack": frame_stack,
@@ -209,7 +209,7 @@ def make_parallel_env(cfg, n_envs, eval_env):
     from torchdriveenv.env_utils import load_default_train_data, construct_env_config
 
     ego_only = False if "multi_agent" in cfg.task else True
-    frame_stack = 3
+    frame_stack = cfg.frame_stack
     env_config_raw = {
         "ego_only": ego_only,
         "frame_stack": frame_stack,
