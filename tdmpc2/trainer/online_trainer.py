@@ -8,6 +8,17 @@ from tensordict.tensordict import TensorDict
 
 from tdmpc2.trainer.base import Trainer
 
+INFO_LATENT_DIM = 4  # psi_smoothness, speed_smoothness, offroad, dist_reward
+
+def extract_info_latent(info):
+    """Extract 4-dim info latent vector from torchdriveenv info dict."""
+    return torch.tensor([
+        float(info.get('psi_smoothness', 0.0)),
+        float(info.get('speed_smoothness', 0.0)),
+        float(info.get('offroad', 0.0)),
+        float(info.get('dist_reward', 0.0)),
+    ], dtype=torch.float32)
+
 
 class OnlineTrainer(Trainer):
     """Trainer class for single-task online TD-MPC2 training."""
@@ -52,11 +63,13 @@ class OnlineTrainer(Trainer):
 
         for i in range(self.cfg.eval_episodes):
             obs, done, ep_reward, t = self.eval_env.reset()[0], False, 0, 0
+            _eval_info_latent = torch.zeros(INFO_LATENT_DIM)
             if self.cfg.save_video:
                 self.logger.video.init(self.eval_env, enabled=(i == 0))
             while not done:
-                action, _, _ = self.agent.act(obs, t0=t == 0, eval_mode=True)
+                action, _, _ = self.agent.act(obs, t0=t == 0, eval_mode=True, info_latent=_eval_info_latent)
                 obs, reward, done, truncated, info = self.eval_env.step(action)
+                _eval_info_latent = extract_info_latent(info)
                 done = done or truncated
                 ep_reward += reward
                 t += 1
@@ -73,9 +86,11 @@ class OnlineTrainer(Trainer):
             ep_rewards_pi, ep_successes_pi = [], []
             for i in range(self.cfg.eval_episodes):
                 obs, done, ep_reward, t = self.eval_env.reset()[0], False, 0, 0
+                _eval_info_latent = torch.zeros(INFO_LATENT_DIM)
                 while not done:
-                    action, _, _ = self.agent.act(obs, t0=t == 0, eval_mode=True, use_pi=True)
+                    action, _, _ = self.agent.act(obs, t0=t == 0, eval_mode=True, use_pi=True, info_latent=_eval_info_latent)
                     obs, reward, done, truncated, info = self.eval_env.step(action)
+                    _eval_info_latent = extract_info_latent(info)
                     done = done or truncated
                     ep_reward += reward
                     t += 1
@@ -98,6 +113,7 @@ class OnlineTrainer(Trainer):
             obs, done, ep_reward, t = self.eval_env.reset()[0], False, 0, 0
             ep_pred_reward = 0
             ep_vals, ep_real_rewards = [], []
+            _eval_info_latent = torch.zeros(INFO_LATENT_DIM)
 
             save_traj = self.cfg.save_trajectories
             traj_plans = []
@@ -106,15 +122,16 @@ class OnlineTrainer(Trainer):
                 self.logger.video.init(self.eval_env, enabled=True)
             while not done:
                 if save_traj:
-                    action, _, _, plan_info = self.agent.act(obs, t0=t == 0, eval_mode=True, return_plan=True)
+                    action, _, _, plan_info = self.agent.act(obs, t0=t == 0, eval_mode=True, return_plan=True, info_latent=_eval_info_latent)
                 else:
-                    action = self.agent.act(obs, t0=t == 0, eval_mode=True) # TODO: set use pi=False
+                    action = self.agent.act(obs, t0=t == 0, eval_mode=True, info_latent=_eval_info_latent)
 
-                pred_reward = self.agent.predict_reward(obs, action)
-                pred_value = self.agent.predict_value(obs, action)
+                pred_reward = self.agent.predict_reward(obs, action, info_latent=_eval_info_latent)
+                pred_value = self.agent.predict_value(obs, action, info_latent=_eval_info_latent)
                 ep_pred_reward += pred_reward
                 ep_vals.append(pred_value)
                 obs, reward, done, truncated, info = self.eval_env.step(action)
+                _eval_info_latent = extract_info_latent(info)
                 ep_real_rewards.append(reward)
 
                 if save_traj:
@@ -166,9 +183,11 @@ class OnlineTrainer(Trainer):
             ep_rewards_pi, ep_successes_pi = [], []
             for i in range(self.cfg.eval_episodes):
                 obs, done, ep_reward, t = self.eval_env.reset()[0], False, 0, 0
+                _eval_info_latent = torch.zeros(INFO_LATENT_DIM)
                 while not done:
-                    action = self.agent.act(obs, t0=t == 0, eval_mode=True, use_pi=True)  #TODO: currently testing arc use_pi=True
+                    action = self.agent.act(obs, t0=t == 0, eval_mode=True, use_pi=True, info_latent=_eval_info_latent)
                     obs, reward, done, truncated, info = self.eval_env.step(action)
+                    _eval_info_latent = extract_info_latent(info)
                     done = done or truncated
                     ep_reward += reward
                     t += 1
@@ -191,9 +210,11 @@ class OnlineTrainer(Trainer):
         mc_ep_rewards = []
         for i in range(n_samples):
             obs, done, ep_reward, t = self.eval_env.reset()[0], False, 0, 0
+            _eval_info_latent = torch.zeros(INFO_LATENT_DIM)
             while not done:
-                action = self.agent.act(obs, t0=t == 0, eval_mode=True, use_pi=True)
+                action = self.agent.act(obs, t0=t == 0, eval_mode=True, use_pi=True, info_latent=_eval_info_latent)
                 obs, reward, done, truncated, info = self.eval_env.step(action)
+                _eval_info_latent = extract_info_latent(info)
                 done = done or truncated
                 ep_reward += reward * self.agent.discount ** t
                 t += 1
@@ -203,25 +224,16 @@ class OnlineTrainer(Trainer):
         q_values = []
         for i in range(n_samples):
             obs, done, ep_reward, t = self.eval_env.reset()[0], False, 0, 0
-            
-            action = self.agent.act(obs, t0=t == 0, eval_mode=True)#, use_pi=True)
+            _eval_info_latent = torch.zeros(INFO_LATENT_DIM)
+            action = self.agent.act(obs, t0=t == 0, eval_mode=True, info_latent=_eval_info_latent)
             task = None
-            #print("action: ", action.shape, ", obs: ", obs.shape)
-            # TODO: fix this for rgb input
-            # if self.cfg.obs == "state":
-                # q_value = self.agent.model.Q(self.agent.model.encode(obs.to(self.agent.device), task), 
-                #                             action.to(self.agent.device), 
-                #                             task, return_type="avg")
-            if self.cfg.obs == "rgb":
-                q_value = self.agent.model.Q(self.agent.model.encode(obs.unsqueeze(0).to(self.agent.device), task).squeeze(0), 
-                                            action.to(self.agent.device), 
-                                            task, return_type="avg")
+            if self.cfg.get('use_info_latent', False):
+                z = _eval_info_latent.to(self.agent.device)
+            elif self.cfg.obs == "rgb":
+                z = self.agent.model.encode(obs.unsqueeze(0).to(self.agent.device), task).squeeze(0)
             else:
-                q_value = self.agent.model.Q(self.agent.model.encode(obs.to(self.agent.device), task), 
-                                            action.to(self.agent.device), 
-                                            task, return_type="avg")
-                #raise ValueError("Unknown observation type:", self.cfg.obs)
-            
+                z = self.agent.model.encode(obs.to(self.agent.device), task)
+            q_value = self.agent.model.Q(z, action.to(self.agent.device), task, return_type="avg")
             q_values.append(q_value.detach().cpu().numpy())
         
         return dict(
@@ -229,7 +241,7 @@ class OnlineTrainer(Trainer):
             q_value= np.nanmean(q_values),
         )
 
-    def to_td(self, obs, action=None, mu=None, std=None, reward=None):
+    def to_td(self, obs, action=None, mu=None, std=None, reward=None, info_latent=None):
         """Creates a TensorDict for a new episode."""
         if isinstance(obs, dict):
             obs = TensorDict(obs, batch_size=(), device="cpu")
@@ -246,16 +258,16 @@ class OnlineTrainer(Trainer):
             std = torch.full_like(action, float("nan"))
         if reward is None:
             reward = torch.tensor(float("nan"))
-        td = TensorDict(
-            dict(
-                obs=obs,
-                action=action.unsqueeze(0),
-                mu=mu.unsqueeze(0),
-                std=std.unsqueeze(0),
-                reward=reward.unsqueeze(0),
-            ),
-            batch_size=(1,),
+        td_dict = dict(
+            obs=obs,
+            action=action.unsqueeze(0),
+            mu=mu.unsqueeze(0),
+            std=std.unsqueeze(0),
+            reward=reward.unsqueeze(0),
         )
+        if self.cfg.get('use_info_latent', False) and info_latent is not None:
+            td_dict['info_latent'] = info_latent.unsqueeze(0).cpu()
+        td = TensorDict(td_dict, batch_size=(1,))
         return td
 
     def train(self):
@@ -269,10 +281,11 @@ class OnlineTrainer(Trainer):
         """Train loop for a single (non-vectorized) environment."""
         train_metrics, done, eval_next = {}, True, True
         train_log_return = []
-        train_log_success = []  
-        train_log_ep_len = [] 
+        train_log_success = []
+        train_log_ep_len = []
 
-        use_pi_flag = False   
+        use_pi_flag = False
+        _last_info_latent = torch.zeros(INFO_LATENT_DIM)
 
         while self._step <= self.cfg.steps:
             # Evaluate agent periodically
@@ -324,18 +337,20 @@ class OnlineTrainer(Trainer):
                     self._ep_idx = self.buffer.add(torch.cat(self._tds))
 
                 obs = self.env.reset()[0]
-                self._tds = [self.to_td(obs)]
+                _last_info_latent = torch.zeros(INFO_LATENT_DIM)
+                self._tds = [self.to_td(obs, info_latent=_last_info_latent)]
 
             # Collect experience
             if self._step > self.cfg.seed_steps:
                 t0 = len(self._tds) == 1
-                action, mu, std = self.agent.act(obs, t0=t0, use_pi = use_pi_flag) # TODO: don't use pi here  
+                action, mu, std = self.agent.act(obs, t0=t0, use_pi=use_pi_flag, info_latent=_last_info_latent)
             else:
                 action = self.env.rand_act()
-                mu, std = action.detach().clone(), torch.full_like(action, math.exp(self.cfg.log_std_max)) # torch.full_like(action, float('nan')), torch.full_like(action, float('nan')) #  # noqa
+                mu, std = action.detach().clone(), torch.full_like(action, math.exp(self.cfg.log_std_max)) # noqa
             obs, reward, done, truncated, info = self.env.step(action)
             done = done or truncated
-            self._tds.append(self.to_td(obs, action, mu, std, reward))
+            _last_info_latent = extract_info_latent(info)
+            self._tds.append(self.to_td(obs, action, mu, std, reward, info_latent=_last_info_latent))
 
             # Update agent
             if self._step >= self.cfg.seed_steps and len(self.buffer) > 0:
@@ -372,7 +387,8 @@ class OnlineTrainer(Trainer):
 
         # Initialize: reset all envs, build per-env episode buffers.
         obs, _ = self.env.reset()  # (n_envs, *obs_shape)
-        _tds_all = [[self.to_td(obs[i])] for i in range(n_envs)]
+        _last_info_latents = [torch.zeros(INFO_LATENT_DIM) for _ in range(n_envs)]
+        _tds_all = [[self.to_td(obs[i], info_latent=_last_info_latents[i])] for i in range(n_envs)]
         use_pi_flags = [False] * n_envs
 
         while self._step <= self.cfg.steps:
@@ -391,8 +407,9 @@ class OnlineTrainer(Trainer):
             # Collect actions for all envs (batched encode + pi; plan loops over MPC envs).
             if self._step > self.cfg.seed_steps:
                 t0_flags = [len(_tds_all[i]) == 1 for i in range(n_envs)]
+                _info_latents_batch = torch.stack(_last_info_latents)  # (n_envs, INFO_LATENT_DIM)
                 actions, mus, stds = self.agent.act_vec(
-                    obs, t0_flags, use_pi_flags=use_pi_flags
+                    obs, t0_flags, use_pi_flags=use_pi_flags, info_latents=_info_latents_batch
                 )
             else:
                 actions = self.env.rand_act()    # (n_envs, action_dim)
@@ -406,8 +423,11 @@ class OnlineTrainer(Trainer):
 
             # Process each env's transition.
             for i in range(n_envs):
+                info_i = infos[i] if isinstance(infos, list) else {k: v[i] for k, v in infos.items()}
+                _last_info_latents[i] = extract_info_latent(info_i)
                 _tds_all[i].append(
-                    self.to_td(next_obs[i], actions[i], mus[i], stds[i], rewards[i])
+                    self.to_td(next_obs[i], actions[i], mus[i], stds[i], rewards[i],
+                               info_latent=_last_info_latents[i])
                 )
                 ep_done = bool(dones[i]) or bool(truncateds[i])
                 if ep_done:
@@ -443,7 +463,8 @@ class OnlineTrainer(Trainer):
 
                     # Start fresh episode buffer for this env using the auto-reset obs.
                     reset_obs_i = self.env._current_obs[i]
-                    _tds_all[i] = [self.to_td(reset_obs_i)]
+                    _last_info_latents[i] = torch.zeros(INFO_LATENT_DIM)
+                    _tds_all[i] = [self.to_td(reset_obs_i, info_latent=_last_info_latents[i])]
                     use_pi_flags[i] = np.random.rand() < self.cfg.use_pi_prob
 
             # Update obs to the post-step / post-reset observations.

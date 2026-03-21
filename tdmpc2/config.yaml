@@ -95,6 +95,7 @@ v_loss_type: "asy_l2" # ["soft_ce", "asy_l2"]
 v_tau: 0.9 # NOTE: only applicable for "asy_l2" loss, 0.5 equals to L2 loss.
 
 # architecture
+use_info_latent: false  # use torchdriveenv info as latent (bypasses encoder, latent_dim forced to 4)
 model_size: ???
 num_enc_layers: 2
 enc_dim: 256

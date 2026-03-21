@@ -68,6 +68,10 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
         if cfg.task == "mt30" and cfg.model_size == 19:
             cfg.latent_dim = 512  # This checkpoint is slightly smaller
 
+    # Info latent: force latent_dim = 4 (psi_smoothness, speed_smoothness, offroad, dist_reward)
+    if cfg.get("use_info_latent", False):
+        cfg.latent_dim = 4
+
     # Multi-task
     cfg.multitask = cfg.task in TASK_SET.keys()
     if cfg.multitask:

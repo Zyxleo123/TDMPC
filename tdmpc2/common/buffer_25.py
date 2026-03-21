@@ -134,7 +134,8 @@ class Buffer:
         std = td["std"][1:]
         reward = td["reward"][1:].unsqueeze(-1)
         task = td["task"][0] if "task" in td.keys() else None
-        return self._to_device(obs, action, mu, std, reward, task)
+        info_latent = td["info_latent"] if "info_latent" in td.keys() else None
+        return self._to_device(obs, action, mu, std, reward, task, info_latent)
 
     def _apply_reward_decay(self, td):
         """

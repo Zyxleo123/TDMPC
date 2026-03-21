@@ -105,14 +105,17 @@ class TDMPC2:
 			self.pi_optim.load_state_dict(state_dict["pi_optim"])
 
 	@torch.no_grad()
-	def predict_reward(self, obs, action, task=None):
+	def predict_reward(self, obs, action, task=None, info_latent=None):
 		"""
 		Predict reward for a given observation and action.
 		"""
-		obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
-		if task is not None:
-			task = torch.tensor([task], device=self.device)
-		z = self.model.encode(obs, task)
+		if self.cfg.get('use_info_latent', False) and info_latent is not None:
+			z = info_latent.to(self.device).unsqueeze(0)
+		else:
+			obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
+			if task is not None:
+				task = torch.tensor([task], device=self.device)
+			z = self.model.encode(obs, task)
 		
 		# Ensure action is a tensor on the correct device
 		if not isinstance(action, torch.Tensor):
@@ -131,14 +134,17 @@ class TDMPC2:
 		return reward.item()
 	
 	@torch.no_grad()
-	def predict_value(self, obs, action, task=None):
+	def predict_value(self, obs, action, task=None, info_latent=None):
 		"""
 		Predict value for a given observation and action.
 		"""
-		obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
-		if task is not None:
-			task = torch.tensor([task], device=self.device)
-		z = self.model.encode(obs, task)
+		if self.cfg.get('use_info_latent', False) and info_latent is not None:
+			z = info_latent.to(self.device).unsqueeze(0)
+		else:
+			obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
+			if task is not None:
+				task = torch.tensor([task], device=self.device)
+			z = self.model.encode(obs, task)
 		
 		# Ensure action is a tensor on the correct device
 		if not isinstance(action, torch.Tensor):
@@ -154,7 +160,7 @@ class TDMPC2:
 		return q.item()
 
 	@torch.no_grad()
-	def act(self, obs, t0=False, eval_mode=False, task=None, use_pi=False, return_plan=False):
+	def act(self, obs, t0=False, eval_mode=False, task=None, use_pi=False, return_plan=False, info_latent=None):
 		"""
 		Select an action by planning in the latent space of the world model.
 
@@ -163,15 +169,21 @@ class TDMPC2:
 				t0 (bool): Whether this is the first observation in the episode.
 				eval_mode (bool): Whether to use the mean of the action distribution.
 				task (int): Task index (only used for multi-task experiments).
+				info_latent (torch.Tensor): 4-dim info latent (used when use_info_latent=True).
 
 		Returns:
 				torch.Tensor: Action to take in the environment.
 		"""
-		obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
-		if task is not None:
-			task = torch.tensor([task], device=self.device)
-		z = self.model.encode(obs, task)
-		if self.cfg.mpc and not use_pi:
+		if self.cfg.get('use_info_latent', False) and info_latent is not None:
+			z = info_latent.to(self.device).unsqueeze(0)
+		else:
+			obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
+			if task is not None:
+				task = torch.tensor([task], device=self.device)
+			z = self.model.encode(obs, task)
+		# When use_info_latent is on, dynamics are bypassed so MPC is not viable
+		force_pi = self.cfg.get('use_info_latent', False)
+		if self.cfg.mpc and not use_pi and not force_pi:
 			if return_plan:
 				a, mu, std, plan_info = self.plan(z, t0=t0, eval_mode=eval_mode, task=task, return_plan=True)
 			else:
@@ -194,7 +206,7 @@ class TDMPC2:
 			return a.cpu(), mu.cpu(), std.cpu()
 
 	@torch.no_grad()
-	def act_vec(self, obs_batch, t0_flags, eval_mode=False, task=None, use_pi_flags=None):
+	def act_vec(self, obs_batch, t0_flags, eval_mode=False, task=None, use_pi_flags=None, info_latents=None):
 		"""Batched action selection for n_envs environments.
 
 		Fuses the encoder forward pass into a single GPU call, then runs
@@ -206,6 +218,7 @@ class TDMPC2:
 			eval_mode (bool): deterministic actions
 			task: task index (multi-task only)
 			use_pi_flags (list[bool]): per-env flag to use policy instead of MPC
+			info_latents (torch.Tensor): shape (n_envs, 4), used when use_info_latent=True
 
 		Returns:
 			actions (n_envs, action_dim), mus (n_envs, action_dim), stds (n_envs, action_dim)
@@ -214,20 +227,26 @@ class TDMPC2:
 		if use_pi_flags is None:
 			use_pi_flags = [False] * n
 
-		# --- single batched encode ---
-		obs_batch = obs_batch.to(self.device, non_blocking=True)
-		if task is not None:
-			task_tensor = torch.tensor([task] * n, device=self.device)
+		# --- single batched encode (or use info latents directly) ---
+		if self.cfg.get('use_info_latent', False) and info_latents is not None:
+			z_batch = info_latents.to(self.device)  # (n, latent_dim=4)
+			task_tensor = torch.tensor([task] * n, device=self.device) if task is not None else None
 		else:
-			task_tensor = None
-		z_batch = self.model.encode(obs_batch, task_tensor)  # (n, latent_dim)
+			obs_batch = obs_batch.to(self.device, non_blocking=True)
+			if task is not None:
+				task_tensor = torch.tensor([task] * n, device=self.device)
+			else:
+				task_tensor = None
+			z_batch = self.model.encode(obs_batch, task_tensor)  # (n, latent_dim)
 
 		actions = torch.empty(n, self.cfg.action_dim)
 		mus     = torch.empty(n, self.cfg.action_dim)
 		stds    = torch.empty(n, self.cfg.action_dim)
 
-		mpc_idxs = [i for i in range(n) if self.cfg.mpc and not use_pi_flags[i]]
-		pi_idxs  = [i for i in range(n) if not (self.cfg.mpc and not use_pi_flags[i])]
+		# When use_info_latent is on, dynamics are bypassed so all envs use pi
+		force_pi = self.cfg.get('use_info_latent', False)
+		mpc_idxs = [i for i in range(n) if self.cfg.mpc and not use_pi_flags[i] and not force_pi]
+		pi_idxs  = [i for i in range(n) if not (self.cfg.mpc and not use_pi_flags[i] and not force_pi)]
 
 		# --- batch pi envs (single model.pi forward) ---
 		if pi_idxs:
@@ -828,38 +847,48 @@ class TDMPC2:
 			obs, action, reward, task = buffer.sample()
 			mu = action.detach().clone()
 			std = torch.full_like(action, self.cfg.max_std)
+			info_latent = None
 		else:
 			# online training
-			obs, action, mu, std, reward, task = buffer.sample() # mu and std are from Gaussian policy used for data collection	
+			obs, action, mu, std, reward, task, info_latent = buffer.sample()
+
+		# When use_info_latent is enabled, use stored info vectors directly as latents
+		use_info_latent = self.cfg.get('use_info_latent', False) and info_latent is not None
 
 		# Compute targets
 		n_step = getattr(self.cfg, 'n_step', 1)
 		with torch.no_grad():
-			next_z = self.model.encode(obs[1:], task)
+			next_z = info_latent[1:] if use_info_latent else self.model.encode(obs[1:], task)
 			td_targets = self._td_target(next_z, reward, task, n_step=n_step)
-			td_H_q = self._td_H_q(next_z, reward, task)	
-			init_q = self.model.Q(self.model.encode(obs[0], task), action[0], task, return_type="avg")
+			td_H_q = self._td_H_q(next_z, reward, task)
+			init_z0 = info_latent[0] if use_info_latent else self.model.encode(obs[0], task)
+			init_q = self.model.Q(init_z0, action[0], task, return_type="avg")
 			il_flag = td_H_q > init_q
-			
+
 		# Prepare for update
 		self.optim.zero_grad(set_to_none=True)
 		self.model.train()
 
 		# Latent rollout
-		z = self.model.encode(obs[0], task)
-		actual_batch_size = z.shape[0]
-		zs = torch.empty(
-			self.cfg.train_horizon + 1,
-			actual_batch_size,
-			self.cfg.latent_dim,
-			device=self.device,
-		)
-		zs[0] = z
-		consistency_loss = 0
-		for t in range(self.cfg.train_horizon):
-			z = self.model.next(z, action[t], task)
-			consistency_loss += F.mse_loss(z, next_z[t]) * self.cfg.rho**t
-			zs[t + 1] = z
+		if use_info_latent:
+			# Use ground-truth info latents directly; dynamics model is bypassed
+			zs = info_latent  # (T+1, B, 4) — already on device from _to_device
+			consistency_loss = 0
+		else:
+			z = self.model.encode(obs[0], task)
+			actual_batch_size = z.shape[0]
+			zs = torch.empty(
+				self.cfg.train_horizon + 1,
+				actual_batch_size,
+				self.cfg.latent_dim,
+				device=self.device,
+			)
+			zs[0] = z
+			consistency_loss = 0
+			for t in range(self.cfg.train_horizon):
+				z = self.model.next(z, action[t], task)
+				consistency_loss += F.mse_loss(z, next_z[t]) * self.cfg.rho**t
+				zs[t + 1] = z
 
 
 		#####################
@@ -880,7 +909,7 @@ class TDMPC2:
 		#####################
 
 		#####################
-		if self.cfg.dyna: #and self.cfg.scale_threshold < self.scale.value:
+		if self.cfg.dyna and not use_info_latent:
 			# Rollout with model predictions
 			_zs_sim = torch.empty(
 				self.cfg.train_horizon + 1,
