@@ -17,6 +17,8 @@ LICENSE
 iai_api_key.txt
 *.txt
 *.gif
+*.png
+*.json
 settings
 
 # HPC

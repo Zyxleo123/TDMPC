@@ -455,14 +455,14 @@ class OnlineTrainer(Trainer):
             # Update obs to the post-step / post-reset observations.
             obs = self.env._current_obs
 
-            # Gradient updates: maintain same update-to-data ratio as single-env.
+            # Gradient updates: fixed at n_updates regardless of n_envs (extra envs improve data diversity, not update count).
             if self._step >= self.cfg.seed_steps and len(self.buffer) > 0:
                 if not _pretrained:
                     num_updates = self.cfg.seed_steps
                     print("Pretraining agent on seed data...")
                     _pretrained = True
                 else:
-                    num_updates = n_envs * self.cfg.n_updates
+                    num_updates = self.cfg.n_updates
                 for _ in range(num_updates):
                     _train_metrics = self.agent.update(self.buffer)
                 train_metrics.update(_train_metrics)
