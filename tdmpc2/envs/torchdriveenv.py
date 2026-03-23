@@ -187,6 +187,14 @@ class VecDriveEnvWrapper:
             return float(success_arr[env_idx])
         return 0.0
 
+    def get_waypoints(self, infos, env_idx, done):
+        """Extract reached_waypoint_num for env_idx from vectorized infos."""
+        if done:
+            final_info = infos.get("final_info", None)
+            if final_info is not None and final_info[env_idx] is not None:
+                return float(final_info[env_idx].get("reached_waypoint_num", float("nan")))
+        return float("nan")
+
     def close(self):
         self.vec_env.close()
         if self.eval_env is not None:
