@@ -91,7 +91,7 @@ class OnlineTrainer(Trainer):
 
     def eval(self):
         """Evaluate a TD-MPC2 agent."""
-        ep_rewards, ep_successes = [], []
+        ep_rewards, ep_successes, ep_waypoints = [], [], []
         ep_rewards_pred = []
         ep_values_pred, ep_values_real = [], []
         for i in range(self.cfg.eval_episodes):
@@ -157,6 +157,7 @@ class OnlineTrainer(Trainer):
             ep_rewards.append(ep_reward)
             ep_rewards_pred.append(ep_pred_reward)
             ep_successes.append(info["success"])
+            ep_waypoints.append(info.get("reached_waypoint_num", float("nan")))
             if self.cfg.save_video:
                 # self.logger.video.save(self._step)
                 self.logger.video.save(self._step, key='results/video')
@@ -181,6 +182,7 @@ class OnlineTrainer(Trainer):
             episode_value_pred=np.nanmean(ep_values_pred),
             episode_value_real=np.nanmean(ep_values_real),
             episode_success=np.nanmean(ep_successes),
+            episode_waypoints=np.nanmean(ep_waypoints),
             episode_reward_pi=np.nanmean(ep_rewards_pi) if self.cfg.eval_pi else np.nan,
             episode_success_pi=np.nanmean(ep_successes_pi) if self.cfg.eval_pi else np.nan,
         )
@@ -269,8 +271,9 @@ class OnlineTrainer(Trainer):
         """Train loop for a single (non-vectorized) environment."""
         train_metrics, done, eval_next = {}, True, True
         train_log_return = []
-        train_log_success = []  
-        train_log_ep_len = [] 
+        train_log_success = []
+        train_log_ep_len = []
+        train_log_waypoints = []
 
         use_pi_flag = False   
 
@@ -295,17 +298,20 @@ class OnlineTrainer(Trainer):
                     eval_next = False
 
                 if self._step > 0 and self._tds:
+                    ep_waypoints = info.get("reached_waypoint_num", float("nan"))
                     train_metrics.update(
                         episode_reward=torch.tensor(
                             [td["reward"] for td in self._tds[1:]]
                         ).sum(),
                         episode_success=info["success"], # for TorchDriveEnv
+                        episode_waypoints=ep_waypoints,
                     )
                     train_metrics.update(self.common_metrics())
 
                     train_log_return.append(train_metrics['episode_reward'])
                     train_log_success.append(train_metrics['episode_success'])
                     train_log_ep_len.append(len(self._tds[1:]))
+                    train_log_waypoints.append(ep_waypoints)
 
                     self.logger.log(train_metrics, "train")
 
@@ -313,13 +319,15 @@ class OnlineTrainer(Trainer):
                         results_metrics = {'return': np.mean(train_log_return),
                                         'episode_length': np.mean(train_log_ep_len),
                                         'success': np.mean(train_log_success),
-                                        'success_subtasks': info['success_subtasks'],
+                                        'waypoints': np.nanmean(train_log_waypoints),
+                                        'success_subtasks': info.get('success_subtasks', float('nan')),
                                         'step': self._step,}
                         #print("result return:", results_metrics["return"])#
                         self.logger.log(results_metrics, "results")
 
                         train_log_return = []
                         train_log_success = []
+                        train_log_waypoints = []
 
                     self._ep_idx = self.buffer.add(torch.cat(self._tds))
 
@@ -368,6 +376,7 @@ class OnlineTrainer(Trainer):
         train_log_return = []
         train_log_success = []
         train_log_ep_len = []
+        train_log_waypoints = []
         _pretrained = self._step >= self.cfg.seed_steps
 
         # Initialize: reset all envs, build per-env episode buffers.
@@ -412,6 +421,7 @@ class OnlineTrainer(Trainer):
                 ep_done = bool(dones[i]) or bool(truncateds[i])
                 if ep_done:
                     ep_success = self.env.get_success(infos, i, done=True)
+                    ep_waypoints = self.env.get_waypoints(infos, i, done=True)
                     ep_reward = torch.tensor(
                         [td["reward"] for td in _tds_all[i][1:]]
                     ).sum()
@@ -419,10 +429,12 @@ class OnlineTrainer(Trainer):
                     train_log_return.append(ep_reward)
                     train_log_success.append(ep_success)
                     train_log_ep_len.append(len(_tds_all[i][1:]))
+                    train_log_waypoints.append(ep_waypoints)
 
                     train_metrics.update(
                         episode_reward=ep_reward,
                         episode_success=ep_success,
+                        episode_waypoints=ep_waypoints,
                     )
                     train_metrics.update(self.common_metrics())
                     self.logger.log(train_metrics, "train")
@@ -432,12 +444,14 @@ class OnlineTrainer(Trainer):
                             'return': np.mean([r.item() if hasattr(r, 'item') else r for r in train_log_return]),
                             'episode_length': np.mean(train_log_ep_len),
                             'success': np.mean(train_log_success),
+                            'waypoints': np.nanmean(train_log_waypoints),
                             'step': self._step,
                         }
                         self.logger.log(results_metrics, "results")
                         train_log_return = []
                         train_log_success = []
                         train_log_ep_len = []
+                        train_log_waypoints = []
 
                     self._ep_idx = self.buffer.add(torch.cat(_tds_all[i]))
 
