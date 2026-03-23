@@ -58,7 +58,7 @@ record_pi_q_scale: false # record curve of policy action value scale
 use_pi_prob: 0.0 # use policy probability to calculate action value
 
 # training slice
-train_horizon: 20          # length of each training subsequence sampled from replay buffer
+train_horizon: 10          # length of each training subsequence sampled from replay buffer
 
 # planning
 planner_mode: "default" # ["default", "loop"]
