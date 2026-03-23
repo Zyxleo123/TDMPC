@@ -1039,14 +1039,16 @@ class TDMPC2:
 
 		# Return training statistics
 		self.model.eval()
+		def _to_float(x):
+			return float(x.mean().item()) if hasattr(x, 'mean') else float(x)
 		return {
-			"consistency_loss": float(consistency_loss.mean().item()),
-			"reward_loss": float(reward_loss.mean().item()),
-			"value_loss": float(value_loss.mean().item()),
+			"consistency_loss": _to_float(consistency_loss),
+			"reward_loss": _to_float(reward_loss),
+			"value_loss": _to_float(value_loss),
 			"pi_loss": pi_loss,
 			"pi_loss_q": pi_loss_q,
 			"pi_loss_prior": pi_loss_prior,
-			"total_loss": float(total_loss.mean().item()),
+			"total_loss": _to_float(total_loss),
 			"grad_norm": float(grad_norm),
 			"pi_scale": float(self.scale.value),
 			"log_pi_scale": float(self.log_pi_scale.value),	
