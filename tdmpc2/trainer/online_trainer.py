@@ -353,7 +353,7 @@ class OnlineTrainer(Trainer):
                 else:
                     num_updates = self.cfg.n_updates
                 for _ in range(num_updates):
-                    _train_metrics = self.agent.update(self.buffer)
+                    _train_metrics = self.agent.update(self.buffer, global_step=self._step)
                 train_metrics.update(_train_metrics)
 
             if self._step % self.cfg.save_freq == 0:
@@ -472,7 +472,7 @@ class OnlineTrainer(Trainer):
                 else:
                     num_updates = self.cfg.n_updates
                 for _ in range(num_updates):
-                    _train_metrics = self.agent.update(self.buffer)
+                    _train_metrics = self.agent.update(self.buffer, global_step=self._step)
                 train_metrics.update(_train_metrics)
 
             if self._step % self.cfg.save_freq == 0:

@@ -2,6 +2,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 
 from tdmpc2.common import math
 from tdmpc2.common.scale import RunningScale
@@ -76,6 +77,40 @@ class TDMPC2:
 		return min(
 			max((frac - 1) / (frac), self.cfg.discount_min), self.cfg.discount_max
 		)
+
+	def _teacher_force_prob(self, global_step):
+		"""Linear P(teacher) from teacher_force_prob_max to min; None if schedule off."""
+		cfg = self.cfg
+		if not getattr(cfg, "teacher_force_schedule", False):
+			return None
+		if global_step is None:
+			return None
+		max_p = float(getattr(cfg, "teacher_force_prob_max", 1.0))
+		min_p = float(getattr(cfg, "teacher_force_prob_min", 0.0))
+		T = max(1, int(getattr(cfg, "teacher_force_schedule_steps", 1_000_000)))
+		g = max(0, int(global_step))
+		alpha = min(1.0, g / T)
+		return max_p + (min_p - max_p) * alpha
+
+	def _rho_dynamics_horizon(self, H):
+		"""Geometric decay base rho with unnormalized last weight rho^(H-1) == rho_horizon_floor."""
+		floor = float(getattr(self.cfg, "rho_horizon_floor", 0.05))
+		if H <= 1:
+			return 1.0
+		return float(floor ** (1.0 / (H - 1)))
+
+	def _rho_pow_weights(self, rho_base, length):
+		return torch.pow(
+			torch.tensor(rho_base, device=self.device, dtype=torch.float32),
+			torch.arange(length, device=self.device, dtype=torch.float32),
+		)
+
+	def _rollout_rho_base(self, H):
+		"""Per-step decay base: cfg.rho if set, else rho from train_horizon + rho_horizon_floor."""
+		r = OmegaConf.select(self.cfg, "rho", default=None)
+		if r is None:
+			return self._rho_dynamics_horizon(H)
+		return float(r)
 
 	def save(self, fp):
 		"""
@@ -629,7 +664,7 @@ class TDMPC2:
 			action = action + std_out * torch.randn_like(action)
 		return action.clamp(-1, 1), mu, std_out, mean
 
-	def update_pi(self, zs, action, mu, std, task, il_flag=None):
+	def update_pi(self, zs, action, mu, std, task, il_flag=None, rho_pow=None):
 		"""
 		Update policy using a sequence of latent states.
 
@@ -647,7 +682,11 @@ class TDMPC2:
 		qs = self.model.Q(zs, pis, task, return_type="avg")
 		self.scale.update(qs[0])
 		qs = self.scale(qs)
-		rho = torch.pow(self.cfg.rho, torch.arange(len(qs), device=self.device))
+		if rho_pow is None:
+			rh = self._rollout_rho_base(len(qs))
+			rho = self._rho_pow_weights(rh, len(qs))
+		else:
+			rho = rho_pow[: len(qs)]
 
 		if self.cfg.actor_mode=="sac":
 			# TD-MPC2 baseline setting.
@@ -837,12 +876,13 @@ class TDMPC2:
 		return traj_reward + terminal_value
 
 
-	def update(self, buffer):	
+	def update(self, buffer, global_step=None):
 		"""
 		Main update function. Corresponds to one iteration of model learning.
 
 		Args:
 				buffer (common.buffer.Buffer): Replay buffer.
+				global_step (int, optional): Env step for teacher-forcing schedule; pass from trainer.
 
 		Returns:
 				dict: Dictionary of training statistics.
@@ -880,7 +920,24 @@ class TDMPC2:
 		self.optim.zero_grad(set_to_none=True)
 		self.model.train()
 
-		# Latent rollout
+		H = self.cfg.train_horizon
+		p_tf = self._teacher_force_prob(global_step)
+		use_teacher = False
+		if p_tf is not None:
+			use_teacher = torch.rand(1).item() < p_tf
+
+		rho_base = self._rollout_rho_base(H)
+		rho_pow_decay = self._rho_pow_weights(rho_base, H)
+		if p_tf is not None and use_teacher:
+			s = rho_pow_decay.sum()
+			rho_pow_full = torch.full(
+				(H,), float(s / H), device=self.device, dtype=torch.float32
+			)
+		else:
+			rho_pow_full = rho_pow_decay
+		rho_pow_dyna = rho_pow_decay
+
+		# Latent rollout (+ consistency); optional teacher forcing overwrites zs with encodings
 		z = self.model.encode(obs[0], task)
 		actual_batch_size = z.shape[0]
 		zs = torch.empty(
@@ -893,8 +950,11 @@ class TDMPC2:
 		consistency_loss = 0
 		for t in range(self.cfg.train_horizon):
 			z = self.model.next(z, action[t], task)
-			consistency_loss += F.mse_loss(z, next_z[t]) * self.cfg.rho**t
+			consistency_loss += F.mse_loss(z, next_z[t]) * rho_pow_full[t]
 			zs[t + 1] = z
+		if p_tf is not None and use_teacher:
+			for t in range(self.cfg.train_horizon + 1):
+				zs[t] = self.model.encode(obs[t], task)
 
 
 		#####################
@@ -966,12 +1026,12 @@ class TDMPC2:
 					if self.cfg.num_bins > 1:
 						dyna_q_loss += (
 							math.soft_ce(_dyna_qs[q][t], _td_targets_sim[t], self.cfg).mean()
-							* self.cfg.rho**t
+							* rho_pow_dyna[t]
 						)
 					else:
 						dyna_q_loss += (
 							F.mse_loss(_dyna_qs[q][t].squeeze(-1), _td_targets_sim[t])
-							* self.cfg.rho**t
+							* rho_pow_dyna[t]
 						)
 			dyna_q_loss /= (self.cfg.train_horizon * self.cfg.num_q)
 			
@@ -991,25 +1051,25 @@ class TDMPC2:
 			if self.cfg.num_bins > 1:
 				reward_loss += (
 					math.soft_ce(reward_preds[t], reward[t], self.cfg).mean()
-					* self.cfg.rho**t
+					* rho_pow_full[t]
 				)
 			else:
 				reward_loss += (
 					F.mse_loss(reward_preds[t].squeeze(-1), reward[t])
-					* self.cfg.rho**t
+					* rho_pow_full[t]
 				)
 		for t in range(num_td_targets):
 			if self.cfg.num_bins > 1:
 				for q in range(self.cfg.num_q):
 					value_loss += (
 						math.soft_ce(qs[q][t], td_targets[t], self.cfg).mean()
-						* self.cfg.rho**t
+						* rho_pow_full[t]
 					)
 			else:
 				for q in range(self.cfg.num_q):
 					value_loss += (
 						F.mse_loss(qs[q][t].squeeze(-1), td_targets[t])
-						* self.cfg.rho**t
+						* rho_pow_full[t]
 					)
 
 		consistency_loss *= 1 / self.cfg.train_horizon
@@ -1038,14 +1098,22 @@ class TDMPC2:
 		self.optim.step()
 
 		# Update policy
-		pi_loss, pi_loss_q, pi_loss_prior  = self.update_pi(_zs.detach(), action.detach(), mu.detach(), std.detach(), task, il_flag)
+		pi_loss, pi_loss_q, pi_loss_prior = self.update_pi(
+			_zs.detach(),
+			action.detach(),
+			mu.detach(),
+			std.detach(),
+			task,
+			il_flag,
+			rho_pow=rho_pow_full,
+		)
 
 		# Update target Q-functions
 		self.model.soft_update_target_Q()
 
 		# Return training statistics
 		self.model.eval()
-		return {
+		out = {
 			"consistency_loss": float(consistency_loss.mean().item()),
 			"reward_loss": float(reward_loss.mean().item()),
 			"value_loss": float(value_loss.mean().item()),
@@ -1055,8 +1123,13 @@ class TDMPC2:
 			"total_loss": float(total_loss.mean().item()),
 			"grad_norm": float(grad_norm),
 			"pi_scale": float(self.scale.value),
-			"log_pi_scale": float(self.log_pi_scale.value),	
-			"dyna_q_loss": dyna_q_loss.item() if self.cfg.dyna else 0,	
+			"log_pi_scale": float(self.log_pi_scale.value),
+			"dyna_q_loss": dyna_q_loss.item() if self.cfg.dyna else 0,
 			"q_val_scale": q_val_sacle if self.cfg.record_q_scale else 0,
 			"q_val_scale_ood": q_val_sacle_ood if self.cfg.record_pi_q_scale else 0,
+			"rho_rollout": float(rho_base),
 		}
+		if p_tf is not None:
+			out["teacher_force_prob"] = float(p_tf)
+			out["teacher_force"] = float(1.0 if use_teacher else 0.0)
+		return out

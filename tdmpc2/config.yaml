@@ -32,7 +32,16 @@ log_freq: 4 #4 for driving, 1 for other tasks
 reward_coef: 0.1
 value_coef: 0.1
 consistency_coef: 20
+# Multi-step loss weights rho^t. Set to null to derive rho from train_horizon (rho^(H-1)=rho_horizon_floor).
 rho: 0.5
+# When rho is null: unnormalized weights are rho^t with rho^(H-1) == rho_horizon_floor (no global rescale).
+rho_horizon_floor: 0.05
+# Teacher-forcing schedule (encoder vs dynamics latents per update). Teacher branch uses uniform weights
+# scaled so sum matches sum of decaying rho^t. Requires global_step from trainer.
+teacher_force_schedule: false
+teacher_force_prob_max: 1.0   # P(teacher) at step 0
+teacher_force_prob_min: 0.0   # P(teacher) after teacher_force_schedule_steps
+teacher_force_schedule_steps: 1_000_000
 lr: 3e-4
 enc_lr_scale: 0.3
 grad_clip_norm: 20
@@ -48,7 +57,7 @@ reward_decay: 0.0 # exponential decay for sparse rewards; 0.0 = disabled
 # priority buffer (Z-score peak detection)
 priority_buffer_ratio: 0.0   # fraction of batch from priority buffer; 0.0 = disabled
 priority_buffer_k: 3.0       # Z-score threshold for peak detection
-priority_buffer_window: 20    # steps before peak to include in snippet
+priority_buffer_window: 10    # steps before peak to include in snippet
 priority_buffer_size: 100_000 # capacity of priority buffer in steps; smaller = more recency bias
 reward_ema_alpha: 0.999       # EMA decay for running reward statistics
 # exp mode
