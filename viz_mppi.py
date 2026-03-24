@@ -24,6 +24,34 @@ def find_available_logs(root_dir):
     if not os.path.exists(root_dir): return []
     return sorted(glob.glob(os.path.join(root_dir, '**', 'eval_trajectories'), recursive=True))
 
+def _format_log_path_choice(log_paths):
+    """
+    Streamlit selectbox format_func: show only wandb_project/exp_name for paths like
+    .../<wandb_project>/<exp_name>/eval_trajectories. If two runs collide, append · task/seed.
+    """
+    counts = {}
+    for p in log_paths:
+        parts = os.path.normpath(p).split(os.sep)
+        if len(parts) >= 3 and parts[-1] == "eval_trajectories":
+            key = (parts[-3], parts[-2])
+        else:
+            key = (p,)
+        counts[key] = counts.get(key, 0) + 1
+
+    def fmt(p):
+        parts = os.path.normpath(p).split(os.sep)
+        if len(parts) >= 3 and parts[-1] == "eval_trajectories":
+            proj, run = parts[-3], parts[-2]
+            base = f"{proj}/{run}"
+            if counts.get((proj, run), 0) > 1 and len(parts) >= 5:
+                task, seed = parts[-5], parts[-4]
+                return f"{base} · {task}/{seed}"
+            return base
+        return p
+
+    return fmt
+
+
 @st.cache_data
 def get_steps_and_episodes(log_path):
     pattern = re.compile(r'plans_step_(\d+)_ep_(\d+)\.pt')
@@ -48,7 +76,12 @@ search_root = st.sidebar.text_input("Search Root", value='logs')
 
 available_logs = find_available_logs(search_root)
 if available_logs:
-    log_path = st.sidebar.selectbox("Log Path", available_logs)
+    _log_label = _format_log_path_choice(available_logs)
+    log_path = st.sidebar.selectbox(
+        "Log Path",
+        available_logs,
+        format_func=_log_label,
+    )
 else:
     st.sidebar.warning(f"No 'eval_trajectories' found in {search_root}")
     log_path = None
