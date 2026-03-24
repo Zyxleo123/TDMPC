@@ -798,6 +798,30 @@ class TDMPC2:
 			bootstrap_z, pi, task, return_type="min", target=True
 		)
 		return targets
+
+	@torch.no_grad()
+	def _td_target_lambda(self, next_z, reward, task, lam, max_n):
+		"""
+		Truncated TD(lambda): G_t^λ = (1-λ) Σ_{n=1}^{N-1} λ^{n-1} G_t^{(n)} + λ^{N-1} G_t^{(N)}.
+		N = min(max_n, T). Each G_t^{(n)} from _td_target (min target Q bootstrap).
+		Returns shape [T - N + 1, B, 1].
+		"""
+		T = reward.shape[0]
+		N = min(int(max_n), T)
+		if N < 1:
+			N = 1
+		num_targets = T - N + 1
+		combined = torch.zeros(
+			num_targets, reward.shape[1], reward.shape[2], device=reward.device
+		)
+		for n in range(1, N + 1):
+			g = self._td_target(next_z, reward, task, n_step=n)
+			if n < N:
+				w = (1.0 - lam) * (lam ** (n - 1))
+			else:
+				w = lam ** (N - 1)
+			combined = combined + w * g[:num_targets]
+		return combined
 	
 	@torch.no_grad()
 	def _td_H_q(self, next_z, reward, task):
@@ -832,11 +856,22 @@ class TDMPC2:
 			# online training
 			obs, action, mu, std, reward, task = buffer.sample() # mu and std are from Gaussian policy used for data collection	
 
-		# Compute targets
-		n_step = getattr(self.cfg, 'n_step', 1)
+		# Compute targets (td_lambda > 0 overrides n_step / n_step_random)
+		td_lam = getattr(self.cfg, "td_lambda", 0.0)
+		n_step = getattr(self.cfg, "n_step", 1)
+		if td_lam <= 0.0:
+			if getattr(self.cfg, "n_step_random", False):
+				n_hi = getattr(self.cfg, "n_step_random_max", 10)
+				n_step = int(torch.randint(1, n_hi + 1, (1,), device=self.device).item())
 		with torch.no_grad():
 			next_z = self.model.encode(obs[1:], task)
-			td_targets = self._td_target(next_z, reward, task, n_step=n_step)
+			if td_lam > 0.0:
+				max_n = getattr(self.cfg, "td_lambda_max_n", 10)
+				td_targets = self._td_target_lambda(
+					next_z, reward, task, float(td_lam), max_n
+				)
+			else:
+				td_targets = self._td_target(next_z, reward, task, n_step=n_step)
 			td_H_q = self._td_H_q(next_z, reward, task)	
 			init_q = self.model.Q(self.model.encode(obs[0], task), action[0], task, return_type="avg")
 			il_flag = td_H_q > init_q

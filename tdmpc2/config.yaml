@@ -90,7 +90,13 @@ vmin: -10
 vmax: +10
 
 # Value;
-n_step: 1 # n-step TD
+n_step: 1 # n-step TD (used when td_lambda=0 and n_step_random=false)
+n_step_random: false # if true, sample n ~ Uniform{1,...,n_step_random_max} each update
+n_step_random_max: 10 # inclusive upper bound when n_step_random is true
+# TD(lambda): mixture of 1..N-step returns. If td_lambda > 0, ignores n_step / n_step_random.
+td_lambda: 0.0 # 0 = off; set e.g. 0.95 to enable truncated TD(lambda)
+td_lambda_max_n: 10 # N in mixture; effective N = min(max_n, trajectory length T)
+
 v_loss_type: "asy_l2" # ["soft_ce", "asy_l2"]
 v_tau: 0.9 # NOTE: only applicable for "asy_l2" loss, 0.5 equals to L2 loss.
 
