@@ -91,11 +91,30 @@ class WorldModel(nn.Module):
 
     def soft_update_target_Q(self):
         """
-        Soft-update target Q-networks using Polyak averaging.
+        Soft-update target Q-networks using Polyak averaging (SB3-style).
+        target = (1 - tau) * target + tau * online
         """
         with torch.no_grad():
             for p, p_target in zip(self._Qs.parameters(), self._target_Qs.parameters()):
                 p_target.data.lerp_(p.data, self.cfg.tau)
+
+    def hard_update_target_Q(self):
+        """Copy online Q-ensemble weights into the target (hard sync)."""
+        with torch.no_grad():
+            for p, p_target in zip(self._Qs.parameters(), self._target_Qs.parameters()):
+                p_target.data.copy_(p.data)
+
+    def update_target_Q(self):
+        """
+        Q-target step: ``q_target_update=soft`` (default) uses Polyak ``tau``;
+        ``hard`` performs a full weight copy each call (SB3 periodic-sync style when
+        combined with a sparse caller; here every update if set to hard).
+        """
+        mode = getattr(self.cfg, "q_target_update", "soft")
+        if mode == "hard":
+            self.hard_update_target_Q()
+        else:
+            self.soft_update_target_Q()
 
     def task_emb(self, x, task):
         """

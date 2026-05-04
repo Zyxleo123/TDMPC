@@ -20,6 +20,10 @@ iai_api_key.txt
 *.png
 *.json
 settings
+*.mp4
+wandb/
+model.zip
+events.out.tfevents*
 
 # HPC
 nautilus/*.yaml

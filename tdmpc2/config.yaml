@@ -45,7 +45,9 @@ teacher_force_schedule_steps: 1_000_000
 lr: 3e-4
 enc_lr_scale: 0.3
 grad_clip_norm: 20
+# Q-target: SB3-style soft Polyak (default) with ``tau``; set ``q_target_update: hard`` for full sync each update
 tau: 0.01
+q_target_update: soft # soft | hard
 discount_denom: 5
 discount_min: 0.95
 discount_max: 0.995
@@ -89,9 +91,15 @@ log_std_max: 2
 prior_coef: 1.0
 scale_threshold: 2.0
 entropy_coef: 1e-4
+# SB3-style automatic entropy coefficient (SAC): learns log α to match ``target_entropy``; ignored for actor modes that do not use entropy_coef
+entropy_automatic: false
+ent_coef_lr: 3e-4
+target_entropy: null # null => -action_dim (SB3 default for Box)
 awac_lambda: 0.3333
 exp_adv_min: 0.1
 exp_adv_max: 10.0
+# Q(z, π(z)) aggregation for policy loss (``update_pi``): ``avg`` (default) | ``min`` (SAC-style) | ``max``
+policy_q_return_type: avg
 
 # critic
 num_bins: 101
@@ -105,6 +113,8 @@ n_step_random_max: 10 # inclusive upper bound when n_step_random is true
 # TD(lambda): mixture of 1..N-step returns. If td_lambda > 0, ignores n_step / n_step_random.
 td_lambda: 0.0 # 0 = off; set e.g. 0.95 to enable truncated TD(lambda)
 td_lambda_max_n: 10 # N in mixture; effective N = min(max_n, trajectory length T)
+# If true, bootstrap uses max-ent backup Q(s',a') - α log π(a'|s') (Stable-Baselines3 SAC). If false, r + γ Q only.
+soft_q_target: true
 
 v_loss_type: "asy_l2" # ["soft_ce", "asy_l2"]
 v_tau: 0.9 # NOTE: only applicable for "asy_l2" loss, 0.5 equals to L2 loss.

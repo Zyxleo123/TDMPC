@@ -1,6 +1,7 @@
 # TODO: modify TDMPC2 using offline RL policy update.
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 
@@ -46,6 +47,24 @@ class TDMPC2:
 		self.pi_optim = torch.optim.Adam(
 			self.model._pi.parameters(), lr=self.cfg.lr, eps=1e-5
 		)
+		self._entropy_actor_modes = frozenset(
+			{"sac", "residual", "residual_qw", "bc_sac", "bc_sac_mean"}
+		)
+		self.entropy_automatic = bool(getattr(self.cfg, "entropy_automatic", False))
+		if self.entropy_automatic:
+			self.log_ent_coef = nn.Parameter(torch.zeros(1, device=self.device))
+			te = OmegaConf.select(self.cfg, "target_entropy", default=None)
+			if te is None:
+				te = -float(self.cfg.action_dim)
+			self.target_entropy = torch.tensor(float(te), device=self.device)
+			ent_lr = float(getattr(self.cfg, "ent_coef_lr", self.cfg.lr))
+			self.ent_coef_optim = torch.optim.Adam(
+				[self.log_ent_coef], lr=ent_lr, eps=1e-5
+			)
+		else:
+			self.log_ent_coef = None
+			self.target_entropy = None
+			self.ent_coef_optim = None
 		self.model.eval()
 		self.scale = RunningScale(cfg)
 		self.log_pi_scale = RunningScale(cfg)	
@@ -112,6 +131,12 @@ class TDMPC2:
 			return self._rho_dynamics_horizon(H)
 		return float(r)
 
+	def _policy_entropy_coef(self):
+		"""Entropy weight for policy / critic SAC terms: fixed ``entropy_coef`` or exp(log α) if automatic."""
+		if self.entropy_automatic:
+			return self.log_ent_coef.exp().detach()
+		return self.cfg.entropy_coef
+
 	def save(self, fp):
 		"""
 		Save state dict of the agent to filepath.
@@ -119,11 +144,16 @@ class TDMPC2:
 		Args:
 				fp (str): Filepath to save state dict to.
 		"""
-		torch.save({
+		payload = {
 			"model": self.model.state_dict(),
 			"optim": self.optim.state_dict(),
 			"pi_optim": self.pi_optim.state_dict(),
-		}, fp)
+		}
+		if self.log_ent_coef is not None:
+			payload["log_ent_coef"] = self.log_ent_coef.detach().cpu()
+		if self.ent_coef_optim is not None:
+			payload["ent_coef_optim"] = self.ent_coef_optim.state_dict()
+		torch.save(payload, fp)
 
 	def load(self, fp):
 		"""
@@ -138,6 +168,12 @@ class TDMPC2:
 			self.optim.load_state_dict(state_dict["optim"])
 		if "pi_optim" in state_dict:
 			self.pi_optim.load_state_dict(state_dict["pi_optim"])
+		if "log_ent_coef" in state_dict and self.log_ent_coef is not None:
+			self.log_ent_coef.data.copy_(
+				state_dict["log_ent_coef"].to(self.device, dtype=self.log_ent_coef.dtype)
+			)
+		if "ent_coef_optim" in state_dict and self.ent_coef_optim is not None:
+			self.ent_coef_optim.load_state_dict(state_dict["ent_coef_optim"])
 
 	@torch.no_grad()
 	def predict_reward(self, obs, action, task=None):
@@ -679,7 +715,12 @@ class TDMPC2:
 		self.pi_optim.zero_grad(set_to_none=True)
 		self.model.track_q_grad(False)
 		_, pis, log_pis, _ = self.model.pi(zs, task)
-		qs = self.model.Q(zs, pis, task, return_type="avg")
+		pi_q_ret = getattr(self.cfg, "policy_q_return_type", "avg")
+		if pi_q_ret not in {"min", "avg", "max"}:
+			raise ValueError(
+				f"policy_q_return_type must be min|avg|max, got {pi_q_ret!r}"
+			)
+		qs = self.model.Q(zs, pis, task, return_type=pi_q_ret)
 		self.scale.update(qs[0])
 		qs = self.scale(qs)
 		if rho_pow is None:
@@ -688,9 +729,16 @@ class TDMPC2:
 		else:
 			rho = rho_pow[: len(qs)]
 
+		w_ent = self._policy_entropy_coef()
+		use_ent_auto = (
+			self.entropy_automatic
+			and self.cfg.actor_mode in self._entropy_actor_modes
+		)
+		log_pis_for_alpha = log_pis.detach().clone() if use_ent_auto else None
+
 		if self.cfg.actor_mode=="sac":
 			# TD-MPC2 baseline setting.
-			pi_loss = ((self.cfg.entropy_coef * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
+			pi_loss = ((w_ent * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
 			prior_loss = torch.zeros_like(pi_loss) # Not used
 			q_loss = pi_loss.detach().clone()
 
@@ -720,7 +768,7 @@ class TDMPC2:
 			else:
 				log_pis_prior = self.scale(log_pis_prior)
 
-			q_loss = ((self.cfg.entropy_coef * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
+			q_loss = ((w_ent * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
 			# if il_flag is not None:
 			# 	il_flag = il_flag.squeeze(-1).unsqueeze(0)
 			# 	#print(f"il_flag: {il_flag.shape} {log_pis_prior.shape}")##
@@ -750,14 +798,14 @@ class TDMPC2:
 				log_pis_prior = torch.zeros_like(log_pis_prior)
 			else:
 				log_pis_prior = self.scale(log_pis_prior)
-			q_loss = ((self.cfg.entropy_coef * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
+			q_loss = ((w_ent * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
 			prior_loss = - ((log_pis_prior * weights).mean(dim=-1) * rho).mean()
 			#pi_loss = q_loss + (self.cfg.prior_coef * self.cfg.action_dim / 61) * prior_loss
 			pi_loss = q_loss + self.cfg.prior_coef * prior_loss
 
 		elif self.cfg.actor_mode=="bc_sac": 
 			# Vanilla BC-SAC loss for policy learning
-			q_loss = ((self.cfg.entropy_coef * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
+			q_loss = ((w_ent * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
 			prior_loss = (((pis - action) ** 2).sum(dim=-1).mean(dim=1) * rho).mean()
 			if self.scale.value <= self.cfg.scale_threshold:
 				prior_loss = torch.zeros_like(prior_loss)
@@ -767,7 +815,7 @@ class TDMPC2:
 
 		elif self.cfg.actor_mode=="bc_sac_mean": 
 			# BC for the mean for policy learning
-			q_loss = ((self.cfg.entropy_coef * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
+			q_loss = ((w_ent * log_pis - qs).mean(dim=(1, 2)) * rho).mean()
 			prior_loss = (((pis - mu) ** 2).sum(dim=-1).mean(dim=1) * rho).mean()
 			if self.scale.value <= self.cfg.scale_threshold:
 				prior_loss = torch.zeros_like(prior_loss)
@@ -800,7 +848,20 @@ class TDMPC2:
 		self.pi_optim.step()
 		self.model.track_q_grad(True)
 
-		return pi_loss.item(), q_loss.item(), prior_loss.item()
+		ent_coef_loss_val = 0.0
+		if log_pis_for_alpha is not None:
+			self.ent_coef_optim.zero_grad(set_to_none=True)
+			h = (
+				(log_pis_for_alpha + self.target_entropy)
+				.mean(dim=(1, 2))
+				* rho
+			).mean()
+			ent_coef_loss = -(self.log_ent_coef * h)
+			ent_coef_loss.backward()
+			self.ent_coef_optim.step()
+			ent_coef_loss_val = float(ent_coef_loss.item())
+
+		return pi_loss.item(), q_loss.item(), prior_loss.item(), ent_coef_loss_val
 
 	@torch.no_grad()
 	def _td_target(self, next_z, reward, task, n_step=1):
@@ -809,6 +870,9 @@ class TDMPC2:
 
 		For n_step=1 (default), equivalent to: reward + γ * Q(next_z).
 		For n_step>1: Σ_{k=0}^{n-1} γ^k * reward[t+k] + γ^n * Q(next_z[t+n]).
+
+		When ``cfg.soft_q_target`` is true (default), the bootstrap matches SB3 SAC:
+		γ^n * ( min_i Q_target(s', a') - α log π(a'|s') ) with a' ~ π(·|s').
 
 		Args:
 				next_z (torch.Tensor): Latent states at following time steps, shape [T, B, latent_dim].
@@ -832,17 +896,28 @@ class TDMPC2:
 
 		# Bootstrap from latent state n steps ahead
 		bootstrap_z = next_z[n_step - 1:]  # [num_targets, B, latent_dim]
-		pi = self.model.pi(bootstrap_z, task)[1]
-		targets = targets + (discount ** n_step) * self.model.Q(
+		_, pi, log_pi, _ = self.model.pi(bootstrap_z, task)
+		q_next = self.model.Q(
 			bootstrap_z, pi, task, return_type="min", target=True
 		)
+		if getattr(self.cfg, "soft_q_target", True):
+			alpha = self._policy_entropy_coef()
+			if isinstance(alpha, torch.Tensor):
+				alpha_t = alpha.to(device=q_next.device, dtype=q_next.dtype)
+			else:
+				alpha_t = torch.as_tensor(
+					float(alpha), device=q_next.device, dtype=q_next.dtype
+				)
+			if self.entropy_automatic or bool((alpha_t != 0).any().item()):
+				q_next = q_next - alpha_t * log_pi
+		targets = targets + (discount ** n_step) * q_next
 		return targets
 
 	@torch.no_grad()
 	def _td_target_lambda(self, next_z, reward, task, lam, max_n):
 		"""
 		Truncated TD(lambda): G_t^λ = (1-λ) Σ_{n=1}^{N-1} λ^{n-1} G_t^{(n)} + λ^{N-1} G_t^{(N)}.
-		N = min(max_n, T). Each G_t^{(n)} from _td_target (min target Q bootstrap).
+		N = min(max_n, T). Each G_t^{(n)} from _td_target (same bootstrap as n-step TD, including soft_q_target).
 		Returns shape [T - N + 1, B, 1].
 		"""
 		T = reward.shape[0]
@@ -1098,7 +1173,7 @@ class TDMPC2:
 		self.optim.step()
 
 		# Update policy
-		pi_loss, pi_loss_q, pi_loss_prior = self.update_pi(
+		pi_loss, pi_loss_q, pi_loss_prior, ent_coef_loss = self.update_pi(
 			_zs.detach(),
 			action.detach(),
 			mu.detach(),
@@ -1108,8 +1183,8 @@ class TDMPC2:
 			rho_pow=rho_pow_full,
 		)
 
-		# Update target Q-functions
-		self.model.soft_update_target_Q()
+		# Update target Q-functions (soft Polyak or hard sync; SB3-style)
+		self.model.update_target_Q()
 
 		# Return training statistics
 		self.model.eval()
@@ -1132,4 +1207,7 @@ class TDMPC2:
 		if p_tf is not None:
 			out["teacher_force_prob"] = float(p_tf)
 			out["teacher_force"] = float(1.0 if use_teacher else 0.0)
+		if self.entropy_automatic:
+			out["ent_coef"] = float(self.log_ent_coef.exp().item())
+			out["ent_coef_loss"] = float(ent_coef_loss)
 		return out
